@@ -77,41 +77,67 @@ if ($action === 'apply') {
         }
     }
 
-    $courses = $manager->get_courses_by_category(
-        $preparedata->categoryid,
-        !empty($preparedata->include_sub)
-    );
+    // Deliberately fast, bounded checks only - resolving the course list
+    // (get_courses_by_category()) is left to the background task, so this
+    // stays quick even for a category with thousands of courses. The task
+    // re-checks capability per course anyway (defence in depth); this is
+    // just for immediate feedback on the two most common mistakes.
+    $errors = [];
 
-    $result = $manager->apply_updates($courses, $preparedata, $USER->id);
+    if (!has_capability('local/examdates:manage', context_coursecat::instance($preparedata->categoryid))) {
+        $errors[] = get_string('error_nopermission', 'local_examdates');
+    }
 
-    if (!empty($result['errors'])) {
-        echo $OUTPUT->notification(
-            get_string('errors', 'local_examdates') . ': ' . count($result['errors']),
-            'warning'
-        );
-        foreach ($result['errors'] as $error) {
-            echo $OUTPUT->notification($error, 'error');
+    if (
+        empty($preparedata->update_exam) && empty($preparedata->update_resit1)
+            && empty($preparedata->update_resit2)
+    ) {
+        $errors[] = get_string('select_at_least_one', 'local_examdates');
+    }
+
+    foreach (['exam', 'resit1', 'resit2'] as $type) {
+        if (
+            !empty($preparedata->{'update_' . $type})
+                && $preparedata->{$type . 'close'} <= $preparedata->{$type . 'open'}
+        ) {
+            $errors[] = get_string('invalid_dates', 'local_examdates')
+                . ' (' . get_string($type, 'local_examdates') . ')';
         }
     }
 
-    if (!empty($result['updated'])) {
-        $uniquecourses = count(array_unique(array_column($result['updated'], 'courseid')));
-
-        echo $OUTPUT->notification(
-            get_string('changes_applied_detailed', 'local_examdates', (object)[
-                'tests'   => count($result['updated']),
-                'courses' => $uniquecourses,
-            ]),
-            'success'
+    if ($errors) {
+        foreach ($errors as $error) {
+            echo $OUTPUT->notification($error, 'error');
+        }
+        echo html_writer::link(
+            new moodle_url('/local/examdates/index.php'),
+            get_string('back', 'local_examdates'),
+            ['class' => 'btn btn-secondary mt-3']
         );
-
-        echo $manager->render_summary_table($result['updated']);
+        echo $OUTPUT->footer();
+        exit;
     }
 
-    if (empty($result['updated']) && empty($result['errors'])) {
-        echo $OUTPUT->notification(get_string('no_changes_made', 'local_examdates'), 'info');
-    }
+    // Queue the actual bulk update as a background task rather than running
+    // it inline: a large category can take far longer than the request's
+    // execution-time limit, and a mid-batch failure in a synchronous
+    // request leaves an unrecoverable, half-applied state with nothing
+    // shown to the person who clicked Apply.
+    $preparedata->userid = $USER->id;
 
+    $task = new \local_examdates\task\apply_updates_task();
+    $task->set_userid($USER->id);
+    $task->set_custom_data($preparedata);
+    \core\task\manager::queue_adhoc_task($task);
+
+    echo $OUTPUT->notification(get_string('apply_queued', 'local_examdates'), 'success');
+
+    echo html_writer::link(
+        new moodle_url('/local/examdates/history.php'),
+        get_string('view_history', 'local_examdates'),
+        ['class' => 'btn btn-primary mt-3']
+    );
+    echo ' ';
     echo html_writer::link(
         new moodle_url('/local/examdates/index.php'),
         get_string('back', 'local_examdates'),

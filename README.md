@@ -16,7 +16,9 @@ changes are logged so they can be reviewed, exported and rolled back.
 ## Features
 
 - Bulk update of quiz open/close dates for a whole category (and its
-  subcategories, if selected).
+  subcategories, if selected). Applying runs as a background task, so
+  category size (tested with thousands of courses) doesn't risk hitting a
+  web request's execution-time limit.
 - Quizzes are matched by course-module ID number, so any naming scheme works.
 - Before/after preview: see exactly what will change before applying anything.
 - Change history with filters (course, user, test type, date range),
@@ -49,7 +51,14 @@ changes are logged so they can be reviewed, exported and rolled back.
 3. Enable the test types you want to update (exam / resit 1 / resit 2), set the
    ID number the quizzes use, and pick the new open/close dates.
 4. Click **Preview** to review the before/after table.
-5. Click **Apply changes** to commit, or **Cancel** to go back.
+5. Click **Apply changes** to confirm, or **Cancel** to go back.
+
+   Applying does not happen immediately: it's queued as a background task
+   and runs on the next cron cycle (typically within a minute), regardless
+   of how many courses are involved - this is deliberate, since a category
+   with hundreds or thousands of courses can take far longer than a web
+   request's execution-time limit allows. You'll get a Moodle notification
+   when it's done; the result is also visible in the change history below.
 6. Use **View change history** to filter, export (CSV) or roll back changes.
 
 Users who only hold `local/examdates:preview` (not `manage`) - typically

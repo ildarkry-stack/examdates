@@ -15,32 +15,25 @@
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
 /**
- * Uninstall hook for local_examdates.
+ * Message providers for local_examdates.
  *
  * @package    local_examdates
  * @copyright  2026 Ильдар
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
-/**
- * Pre-uninstallation hook.
- *
- * The {local_examdates_log} table, capabilities and scheduled task are removed
- * automatically by core based on db/install.xml, db/access.php and db/tasks.php.
- * A queued *adhoc* task is not, though (see classes/task/apply_updates_task.php) -
- * it isn't declared anywhere core scans for cleanup, so one left pending across
- * an uninstall would sit in {task_adhoc} referencing a class that no longer
- * exists, and fail the next time cron tries to run it.
- *
- * @return bool
- */
-function xmldb_local_examdates_uninstall() {
-    global $DB;
+defined('MOODLE_INTERNAL') || die();
 
-    $DB->delete_records_list('task_adhoc', 'classname', [
-        '\local_examdates\task\apply_updates_task',
-        'local_examdates\task\apply_updates_task',
-    ]);
+$messageproviders = [
 
-    return true;
-}
+    // Sent by the apply_updates_task adhoc task once a background bulk
+    // update finishes, since the person who requested it isn't watching a
+    // page for the result.
+    'apply_complete' => [
+        'defaults' => [
+            'popup' => MESSAGE_PERMITTED + MESSAGE_DEFAULT_LOGGEDIN + MESSAGE_DEFAULT_LOGGEDOFF,
+            'email' => MESSAGE_PERMITTED + MESSAGE_DEFAULT_LOGGEDIN + MESSAGE_DEFAULT_LOGGEDOFF,
+        ],
+    ],
+
+];

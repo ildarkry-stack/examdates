@@ -65,14 +65,13 @@ $string['not_selected'] = 'не выбрано';
 $string['notfound'] = 'Не найдено';
 $string['found_quizzes'] = 'Найдено тестов';
 $string['errors'] = 'Пропущенные тесты / ошибки';
-$string['error'] = 'Ошибка';
 $string['nochanges'] = 'Без изменений';
-$string['updated'] = 'Обновлено';
-$string['status'] = 'Статус';
 
 // Сообщения.
 $string['no_courses_found'] = 'В выбранной категории не найдено курсов';
 $string['no_changes_made'] = 'Изменения не были применены';
+$string['apply_queued'] = 'Изменение поставлено в очередь и будет применено в фоновом режиме. Вы получите уведомление по завершении — результат также будет виден в истории изменений.';
+$string['apply_complete_subject'] = 'Обновление дат экзаменов завершено';
 $string['changes_applied_detailed'] = 'Изменения успешно применены: {$a->tests} тестов в {$a->courses} курсах';
 $string['missing_idnumber'] = 'В курсе "{$a->coursename}" отсутствует тест с idnumber = "{$a->idnumber}"';
 $string['invalid_dates'] = 'Некорректные даты: дата закрытия должна быть позже даты открытия';
@@ -154,6 +153,7 @@ $string['event_dates_updated'] = 'Даты экзаменов обновлены
 
 // Запланированные задачи.
 $string['task_clean_logs'] = 'Очистка устаревших записей журнала дат экзаменов';
+$string['task_apply_updates'] = 'Применение массового изменения дат экзаменов';
 
 // Приватность (GDPR).
 $string['privacy:metadata:local_examdates_log'] = 'Журнал изменений дат экзаменов, выполненных пользователями.';

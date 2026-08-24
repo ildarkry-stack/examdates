@@ -40,17 +40,21 @@ class manager {
      * @param string $capability Capability to check ('local/examdates:manage' or
      *                           'local/examdates:preview'). Defaults to manage
      *                           so existing callers keep their current behaviour.
+     * @param int|null $userid Check as this user rather than the current $USER -
+     *                         required when called from a background task, where
+     *                         there is no "current" web user to fall back to.
      * @return array List of course records keyed by id
      */
     public function get_courses_by_category(
         $categoryid,
         $includesub = true,
-        $capability = 'local/examdates:manage'
+        $capability = 'local/examdates:manage',
+        $userid = null
     ) {
         global $DB;
 
         // Verify the user may access the starting category.
-        $this->require_category_capability($categoryid, $capability);
+        $this->require_category_capability($categoryid, $capability, $userid);
 
         if (!$includesub) {
             return $DB->get_records('course', ['category' => $categoryid], 'fullname');
@@ -66,7 +70,7 @@ class manager {
             foreach ($allcategories as $cat) {
                 if (in_array($cat->parent, $catids) && !in_array($cat->id, $catids)) {
                     try {
-                        $this->require_category_capability($cat->id, $capability);
+                        $this->require_category_capability($cat->id, $capability, $userid);
                         $catids[] = $cat->id;
                         $added = true;
                     } catch (\required_capability_exception $e) {
@@ -370,7 +374,7 @@ class manager {
             // Defence in depth: re-check capability for this course's category.
             $categoryid = isset($course->category) ? $course->category : get_course($course->id)->category;
             try {
-                $this->require_category_capability($categoryid, 'local/examdates:manage');
+                $this->require_category_capability($categoryid, 'local/examdates:manage', $userid);
             } catch (\required_capability_exception $e) {
                 $result['errors'][] = get_string('error_nopermission', 'local_examdates')
                     . ': ' . format_string($course->fullname);
@@ -495,7 +499,11 @@ class manager {
         $record->old_timeclose   = $oldclose ?: 0;
         $record->new_timeopen    = $newopen;
         $record->new_timeclose   = $newclose;
-        $record->action_type     = 'bulk';
+        // The rollback_change() method below prefixes its batch id with
+        // 'rollback_' - reuse that same signal here so this column actually
+        // distinguishes the two cases, instead of being hardcoded to one
+        // constant value.
+        $record->action_type     = (strpos($batchid, 'rollback_') === 0) ? 'rollback' : 'bulk';
         $record->batch_id        = $batchid;
         $record->ip_address      = getremoteaddr();
 
@@ -538,46 +546,6 @@ class manager {
             : userdate($timeclose, $format);
 
         return $openstr . ' — ' . $closestr;
-    }
-
-    /**
-     * Render a summary table of applied updates.
-     *
-     * @param array $updates List of updates
-     * @return string HTML
-     */
-    public function render_summary_table($updates) {
-        if (empty($updates)) {
-            return '';
-        }
-
-        $table = new \html_table();
-        $table->head = [
-            get_string('course', 'local_examdates'),
-            get_string('quiz', 'local_examdates'),
-            get_string('old_dates', 'local_examdates'),
-            get_string('new_dates', 'local_examdates'),
-            get_string('status', 'local_examdates'),
-        ];
-        $table->data = [];
-
-        foreach ($updates as $update) {
-            $courseurl = new \moodle_url('/course/view.php', ['id' => $update['courseid']]);
-
-            $quizlabel = get_string($update['quiztype'], 'local_examdates') . ': '
-                . format_string($update['quizname'])
-                . ' (ID: ' . s($update['idnumber']) . ')';
-
-            $table->data[] = [
-                \html_writer::link($courseurl, format_string($update['coursename']), ['target' => '_blank']),
-                $quizlabel,
-                $update['old_dates'],
-                $update['new_dates'],
-                \html_writer::tag('span', get_string('updated', 'local_examdates'), ['class' => 'text-success']),
-            ];
-        }
-
-        return \html_writer::table($table);
     }
 
     /**
@@ -699,11 +667,12 @@ class manager {
      *
      * @param int $categoryid Category ID
      * @param string $capability Capability name
+     * @param int|null $userid Check as this user rather than the current $USER.
      * @throws \required_capability_exception
      */
-    private function require_category_capability($categoryid, $capability) {
+    private function require_category_capability($categoryid, $capability, $userid = null) {
         $context = \context_coursecat::instance($categoryid);
-        require_capability($capability, $context);
+        require_capability($capability, $context, $userid);
     }
 
     /**

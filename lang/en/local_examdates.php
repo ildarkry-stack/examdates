@@ -61,14 +61,13 @@ $string['not_selected'] = 'not selected';
 $string['notfound'] = 'Not found';
 $string['found_quizzes'] = 'Tests found';
 $string['errors'] = 'Missing tests / errors';
-$string['error'] = 'Error';
 $string['nochanges'] = 'No changes';
-$string['updated'] = 'Updated';
-$string['status'] = 'Status';
 
 // Messages.
 $string['no_courses_found'] = 'No courses found in the selected category';
 $string['no_changes_made'] = 'No changes were applied';
+$string['apply_queued'] = 'The change has been queued and will be applied in the background. You will get a notification when it is done - check the change history for the result.';
+$string['apply_complete_subject'] = 'Exam dates update finished';
 $string['changes_applied_detailed'] = 'Changes successfully applied: {$a->tests} tests in {$a->courses} courses';
 $string['missing_idnumber'] = 'Course "{$a->coursename}" is missing a test with idnumber = "{$a->idnumber}"';
 $string['invalid_dates'] = 'Invalid dates: closing date must be after opening date';
@@ -150,6 +149,7 @@ $string['event_dates_updated'] = 'Exam dates updated';
 
 // Scheduled tasks.
 $string['task_clean_logs'] = 'Clean up old exam date log entries';
+$string['task_apply_updates'] = 'Apply bulk exam date changes';
 
 // Privacy (GDPR).
 $string['privacy:metadata:local_examdates_log'] = 'A log of exam date changes performed by users.';

@@ -101,7 +101,12 @@ if (empty($preparedata->update_exam) && empty($preparedata->update_resit1) && em
 }
 
 $manager = new \local_examdates\manager();
-$courses = $manager->get_courses_by_category($categoryid, (bool)$options['includesub']);
+$courses = $manager->get_courses_by_category(
+    $categoryid,
+    (bool)$options['includesub'],
+    'local/examdates:manage',
+    get_admin()->id
+);
 
 if (empty($courses)) {
     cli_writeln(get_string('no_courses_found', 'local_examdates'));
