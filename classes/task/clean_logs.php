@@ -24,10 +24,10 @@
 
 namespace local_examdates\task;
 
-defined('MOODLE_INTERNAL') || die();
-
+/**
+ * Scheduled task class that purges old exam-date log entries.
+ */
 class clean_logs extends \core\task\scheduled_task {
-
     /**
      * Return the task's localised name (shown on the scheduled tasks admin page).
      *

@@ -29,28 +29,67 @@ defined('MOODLE_INTERNAL') || die();
 global $CFG;
 require_once($CFG->libdir . '/formslib.php');
 
+/**
+ * Category/test-type/date selection form, used by both index.php (full
+ * category picker) and preview.php (category fixed via customdata).
+ */
 class examdates_form extends \moodleform {
-
+    /**
+     * Build the category picker (or static display, if fixed), the three
+     * quiz-type blocks (exam/resit1/resit2) and the preview submit button.
+     */
     public function definition() {
         $mform = $this->_form;
 
-        // Category selection: capability-aware and hierarchical.
-        $categories = \core_course_category::make_categories_list('local/examdates:manage');
+        $fixedcategoryid = !empty($this->_customdata['fixedcategoryid'])
+            ? (int)$this->_customdata['fixedcategoryid'] : 0;
 
-        $mform->addElement('select', 'categoryid',
-            get_string('category', 'local_examdates'), $categories);
-        $mform->setType('categoryid', PARAM_INT);
-        $mform->addRule('categoryid', null, 'required', null, 'client');
+        if ($fixedcategoryid) {
+            // Reached from a specific category's admin menu (preview.php): the
+            // category is not a free choice, so show it as read-only.
+            $categoryname = isset($this->_customdata['fixedcategoryname'])
+                ? $this->_customdata['fixedcategoryname'] : '';
+            $mform->addElement(
+                'static',
+                'categoryid_display',
+                get_string('category', 'local_examdates'),
+                $categoryname
+            );
+            $mform->addElement('hidden', 'categoryid', $fixedcategoryid);
+            $mform->setType('categoryid', PARAM_INT);
+        } else {
+            // Category selection: capability-aware and hierarchical.
+            $categories = \core_course_category::make_categories_list('local/examdates:manage');
 
-        // Pre-select the configured default category if present.
-        $default = get_config('local_examdates', 'default_category');
-        if ($default && isset($categories[$default])) {
-            $mform->setDefault('categoryid', $default);
+            $mform->addElement(
+                'select',
+                'categoryid',
+                get_string('category', 'local_examdates'),
+                $categories
+            );
+            $mform->setType('categoryid', PARAM_INT);
+            $mform->addRule('categoryid', null, 'required', null, 'client');
+
+            // A category passed in via the URL (e.g. the "manage" link from the
+            // preview page) takes priority over the configured default.
+            $preset = !empty($this->_customdata['presetcategoryid'])
+                ? (int)$this->_customdata['presetcategoryid'] : 0;
+            if ($preset && isset($categories[$preset])) {
+                $mform->setDefault('categoryid', $preset);
+            } else {
+                $default = get_config('local_examdates', 'default_category');
+                if ($default && isset($categories[$default])) {
+                    $mform->setDefault('categoryid', $default);
+                }
+            }
         }
 
         // Include subcategories.
-        $mform->addElement('advcheckbox', 'include_sub',
-            get_string('include_subcategories', 'local_examdates'));
+        $mform->addElement(
+            'advcheckbox',
+            'include_sub',
+            get_string('include_subcategories', 'local_examdates')
+        );
         $mform->setType('include_sub', PARAM_INT);
         $mform->setDefault('include_sub', 1);
 
@@ -74,8 +113,11 @@ class examdates_form extends \moodleform {
     private function add_quiz_block($mform, $type, $defaultchecked) {
         $mform->addElement('header', $type . 'header', get_string($type, 'local_examdates'));
 
-        $mform->addElement('advcheckbox', 'update_' . $type,
-            get_string('update_' . $type . '_dates', 'local_examdates'));
+        $mform->addElement(
+            'advcheckbox',
+            'update_' . $type,
+            get_string('update_' . $type . '_dates', 'local_examdates')
+        );
         $mform->setType('update_' . $type, PARAM_INT);
         $mform->setDefault('update_' . $type, $defaultchecked);
 
@@ -85,13 +127,19 @@ class examdates_form extends \moodleform {
         $mform->addHelpButton($type . '_idnumber', 'idnumber', 'local_examdates');
         $mform->disabledIf($type . '_idnumber', 'update_' . $type, 'notchecked');
 
-        $mform->addElement('date_time_selector', $type . 'open',
-            get_string('dateopen', 'local_examdates'));
+        $mform->addElement(
+            'date_time_selector',
+            $type . 'open',
+            get_string('dateopen', 'local_examdates')
+        );
         $mform->disabledIf($type . 'open', 'update_' . $type, 'notchecked');
         $this->set_default_time($mform, $type . 'open', 0, 1);
 
-        $mform->addElement('date_time_selector', $type . 'close',
-            get_string('dateclose', 'local_examdates'));
+        $mform->addElement(
+            'date_time_selector',
+            $type . 'close',
+            get_string('dateclose', 'local_examdates')
+        );
         $mform->disabledIf($type . 'close', 'update_' . $type, 'notchecked');
         $this->set_default_time($mform, $type . 'close', 23, 59);
     }
@@ -102,11 +150,23 @@ class examdates_form extends \moodleform {
     private function set_default_time($mform, $elementname, $hour, $minute) {
         $defaultdate = usergetdate(time());
         $timestamp = make_timestamp(
-            $defaultdate['year'], $defaultdate['mon'], $defaultdate['mday'], $hour, $minute
+            $defaultdate['year'],
+            $defaultdate['mon'],
+            $defaultdate['mday'],
+            $hour,
+            $minute
         );
         $mform->setDefault($elementname, $timestamp);
     }
 
+    /**
+     * Server-side validation: at least one quiz type must be selected, each
+     * selected type needs an idnumber, and close must be after open.
+     *
+     * @param array $data Submitted form data
+     * @param array $files Submitted files (unused)
+     * @return array Field name => error message
+     */
     public function validation($data, $files) {
         $errors = [];
 

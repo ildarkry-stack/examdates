@@ -22,6 +22,9 @@ changes are logged so they can be reviewed, exported and rolled back.
 - Change history with filters (course, user, test type, date range),
   pagination and CSV export.
 - Per-change rollback to the previous dates.
+- Category-level read-only preview for `local/examdates:preview` holders
+  (e.g. teachers), reachable from that category's own admin menu - no
+  Site administration access required.
 - Calendar events are kept in sync when dates change.
 - Configurable logging and automatic log retention (scheduled task).
 - Privacy (GDPR) provider implemented.
@@ -49,8 +52,32 @@ changes are logged so they can be reviewed, exported and rolled back.
 5. Click **Apply changes** to commit, or **Cancel** to go back.
 6. Use **View change history** to filter, export (CSV) or roll back changes.
 
+Users who only hold `local/examdates:preview` (not `manage`) - typically
+teachers or editing teachers - don't see the Site administration page above
+at all. Instead, from **Course category management**, open the category in
+question and look for **Exam dates preview** in its admin menu. That opens a
+read-only version of the same before/after preview, scoped to that category,
+with no way to apply changes.
+
 Quizzes must have an ID number set in their module settings (Quiz settings →
 Common module settings → ID number) matching the value entered in the form.
+
+## CLI
+
+For scripted or scheduled bulk updates, use `cli/update_exam_dates.php`:
+
+```
+php local/examdates/cli/update_exam_dates.php \
+    --categoryid=5 \
+    --examopen="2026-06-01 09:00" --examclose="2026-06-01 11:00" \
+    --resit1open="2026-07-01 09:00" --resit1close="2026-07-01 11:00" \
+    --dryrun
+```
+
+Drop `--dryrun` to actually apply the changes. `--includesub=0` restricts the
+update to the category itself (subcategories are included by default).
+`--examid`, `--resit1id`, `--resit2id` override the default idnumbers
+(`exam`, `resit1`, `resit2`).
 
 ## Settings
 

@@ -22,8 +22,6 @@
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
-defined('MOODLE_INTERNAL') || die();
-
 /**
  * Upgrade the local_examdates plugin database schema.
  *
@@ -37,7 +35,6 @@ function xmldb_local_examdates_upgrade($oldversion) {
 
     // Brings the log table in line with what manager::log_change() actually writes.
     if ($oldversion < 2026060503) {
-
         $table = new xmldb_table('local_examdates_log');
 
         // Define and add each previously-missing field (idempotent).

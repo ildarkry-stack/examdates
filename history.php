@@ -92,7 +92,8 @@ $courseoptions = [];
 $courserows = $DB->get_records_sql(
     'SELECT courseid, MAX(course_fullname) AS name
        FROM {local_examdates_log}
-   GROUP BY courseid');
+   GROUP BY courseid'
+);
 foreach ($courserows as $row) {
     $courseoptions[$row->courseid] = $row->name !== null && $row->name !== ''
         ? $row->name
@@ -112,7 +113,8 @@ asort($useroptions);
 
 $idoptions = [];
 $idnumbers = $DB->get_fieldset_sql(
-    'SELECT DISTINCT idnumber FROM {local_examdates_log} ORDER BY idnumber');
+    'SELECT DISTINCT idnumber FROM {local_examdates_log} ORDER BY idnumber'
+);
 foreach ($idnumbers as $idn) {
     $idoptions[$idn] = $idn;
 }
@@ -157,6 +159,53 @@ $filterform->set_data([
 
 $datetimeformat = get_string('strftimedatetime', 'langconfig');
 
+// Rollback a specific change (two-step confirm, must run before any output).
+$rollbackid = optional_param('rollback', 0, PARAM_INT);
+if ($rollbackid) {
+    require_sesskey();
+
+    $returnurl = new moodle_url($baseurl, $filterparams);
+
+    if (!optional_param('confirm', 0, PARAM_BOOL)) {
+        echo $OUTPUT->header();
+        echo $OUTPUT->confirm(
+            get_string('rollback_confirm', 'local_examdates'),
+            new moodle_url($baseurl, $filterparams + [
+                'rollback' => $rollbackid,
+                'confirm'  => 1,
+                'sesskey'  => sesskey(),
+            ]),
+            $returnurl
+        );
+        echo $OUTPUT->footer();
+        exit;
+    }
+
+    try {
+        $manager->rollback_change($rollbackid, $USER->id);
+        redirect(
+            $returnurl,
+            get_string('rollback_success', 'local_examdates'),
+            null,
+            \core\output\notification::NOTIFY_SUCCESS
+        );
+    } catch (\required_capability_exception $e) {
+        redirect(
+            $returnurl,
+            get_string('error_nopermission', 'local_examdates'),
+            null,
+            \core\output\notification::NOTIFY_ERROR
+        );
+    } catch (\moodle_exception $e) {
+        redirect(
+            $returnurl,
+            get_string('rollback_error', 'local_examdates') . ': ' . $e->getMessage(),
+            null,
+            \core\output\notification::NOTIFY_ERROR
+        );
+    }
+}
+
 // CSV export must run before any page output.
 if (optional_param('export', '', PARAM_ALPHA) === 'csv') {
     require_once($CFG->libdir . '/csvlib.class.php');
@@ -177,7 +226,7 @@ if (optional_param('export', '', PARAM_ALPHA) === 'csv') {
 
     $exportusers = [];
     if ($all['records']) {
-        $exportuserids = array_unique(array_map(function($r) {
+        $exportuserids = array_unique(array_map(function ($r) {
             return $r->userid;
         }, $all['records']));
         $exportusers = $DB->get_records_list('user', 'id', $exportuserids);
@@ -217,17 +266,30 @@ if (empty($history['records'])) {
     echo $OUTPUT->notification(get_string('history_empty', 'local_examdates'), 'info');
 } else {
     // Export current selection.
-    $exporturl = new moodle_url('/local/examdates/history.php',
-        $filterparams + ['export' => 'csv']);
+    $exporturl = new moodle_url(
+        '/local/examdates/history.php',
+        $filterparams + ['export' => 'csv']
+    );
     echo html_writer::div(
-        html_writer::link($exporturl, get_string('export_csv', 'local_examdates'),
-            ['class' => 'btn btn-secondary']),
+        html_writer::link(
+            $exporturl,
+            get_string('export_csv', 'local_examdates'),
+            ['class' => 'btn btn-secondary']
+        ),
         'mb-2'
     );
 
-    echo html_writer::tag('p',
+    echo html_writer::tag(
+        'p',
         get_string('records_total', 'local_examdates', $history['total']),
-        ['class' => 'text-muted']);
+        ['class' => 'text-muted']
+    );
+
+    echo html_writer::tag(
+        'p',
+        get_string('rollback_notice', 'local_examdates'),
+        ['class' => 'text-muted small font-italic']
+    );
 
     $table = new html_table();
     $table->head = [
@@ -237,42 +299,104 @@ if (empty($history['records'])) {
         get_string('quiz', 'local_examdates'),
         get_string('old_dates', 'local_examdates'),
         get_string('new_dates', 'local_examdates'),
+        get_string('actions', 'local_examdates'),
     ];
     $table->data = [];
 
-    // Batch-load the users referenced on this page (avoids N+1 queries).
-    $pageuserids = array_unique(array_map(function($r) {
+    // Batch-load everything referenced on this page (avoids N+1 queries, and -
+    // unlike get_course() - simply omits rows for courses/quizzes that have
+    // since been deleted instead of throwing).
+    $pageuserids = array_unique(array_map(function ($r) {
         return $r->userid;
     }, $history['records']));
     $pageusers = $pageuserids ? $DB->get_records_list('user', 'id', $pageuserids) : [];
 
+    $pagecourseids = array_unique(array_map(function ($r) {
+        return $r->courseid;
+    }, $history['records']));
+    $pagecourses = $pagecourseids ? $DB->get_records_list('course', 'id', $pagecourseids) : [];
+
+    $pagequizids = array_unique(array_map(function ($r) {
+        return $r->quizid;
+    }, $history['records']));
+    $pagequizzes = $pagequizids ? $DB->get_records_list('quiz', 'id', $pagequizids) : [];
+
+    // Rollback is only offered for the latest log entry per quiz (across the
+    // whole log, not just this page) - see the rollback_notice string.
+    $latestidbyquiz = [];
+    if ($pagequizids) {
+        [$insql, $inparams] = $DB->get_in_or_equal($pagequizids, SQL_PARAMS_NAMED);
+        $latestrows = $DB->get_records_sql(
+            "SELECT quizid, MAX(id) AS maxid FROM {local_examdates_log} WHERE quizid $insql GROUP BY quizid",
+            $inparams
+        );
+        foreach ($latestrows as $row) {
+            $latestidbyquiz[$row->quizid] = $row->maxid;
+        }
+    }
+
     foreach ($history['records'] as $record) {
         $user = isset($pageusers[$record->userid]) ? $pageusers[$record->userid] : null;
+        $course = isset($pagecourses[$record->courseid]) ? $pagecourses[$record->courseid] : null;
+        $quiz = isset($pagequizzes[$record->quizid]) ? $pagequizzes[$record->quizid] : null;
 
         $olddates = $manager->format_date_range($record->old_timeopen, $record->old_timeclose);
         $newdates = $manager->format_date_range($record->new_timeopen, $record->new_timeclose);
 
-        // Fall back to a live lookup if the denormalised name is empty.
+        // Fall back to a live lookup if the denormalised name is empty; if the
+        // course has since been deleted, say so instead of linking to nothing.
         $coursename = $record->course_fullname;
-        if (empty($coursename) && ($course = get_course($record->courseid, false))) {
+        if (empty($coursename) && $course) {
             $coursename = $course->fullname;
+        }
+
+        if (empty($coursename)) {
+            $coursecell = html_writer::tag(
+                'span',
+                get_string('course_deleted', 'local_examdates'),
+                ['class' => 'text-muted font-italic']
+            );
+        } else {
+            $courseurl = new moodle_url('/course/view.php', ['id' => $record->courseid]);
+            $coursecell = html_writer::link($courseurl, format_string($coursename), ['target' => '_blank']);
         }
 
         $quizname = $record->quiz_name;
         if (empty($quizname)) {
-            $quiz = $DB->get_record('quiz', ['id' => $record->quizid]);
             $quizname = $quiz ? $quiz->name : $record->idnumber;
         }
 
-        $courseurl = new moodle_url('/course/view.php', ['id' => $record->courseid]);
+        // Rollback only makes sense - and is only offered - when the course and
+        // quiz still exist and the current user can manage dates in that category.
+        $islatest = isset($latestidbyquiz[$record->quizid]) && $latestidbyquiz[$record->quizid] == $record->id;
+
+        $canrollback = false;
+        if ($islatest && $course && $quiz && !empty($course->category)) {
+            $canrollback = has_capability('local/examdates:manage', \context_coursecat::instance($course->category));
+        }
+
+        if ($canrollback) {
+            $rollbackurl = new moodle_url($baseurl, $filterparams + [
+                'rollback' => $record->id,
+                'sesskey'  => sesskey(),
+            ]);
+            $actioncell = html_writer::link(
+                $rollbackurl,
+                get_string('rollback', 'local_examdates'),
+                ['class' => 'btn btn-sm btn-outline-danger']
+            );
+        } else {
+            $actioncell = '';
+        }
 
         $table->data[] = [
             userdate($record->timecreated, $datetimeformat),
             $user ? fullname($user) : '-',
-            html_writer::link($courseurl, format_string($coursename), ['target' => '_blank']),
+            $coursecell,
             format_string($quizname) . ' (' . s($record->idnumber) . ')',
             $olddates,
             $newdates,
+            $actioncell,
         ];
     }
 

@@ -24,29 +24,39 @@
 
 namespace local_examdates;
 
-defined('MOODLE_INTERNAL') || die();
-
+/**
+ * Manager class for local_examdates plugin.
+ *
+ * Handles bulk-updating quiz exam/resit dates for a course category, previewing
+ * changes before they're applied, logging changes and rolling them back.
+ */
 class manager {
-
     /**
      * Get all courses in a category (and optionally its subcategories) that the
-     * current user is allowed to manage.
+     * current user is allowed to see, per the given capability.
      *
      * @param int $categoryid Category ID
      * @param bool $includesub Include subcategories
+     * @param string $capability Capability to check ('local/examdates:manage' or
+     *                           'local/examdates:preview'). Defaults to manage
+     *                           so existing callers keep their current behaviour.
      * @return array List of course records keyed by id
      */
-    public function get_courses_by_category($categoryid, $includesub = true) {
+    public function get_courses_by_category(
+        $categoryid,
+        $includesub = true,
+        $capability = 'local/examdates:manage'
+    ) {
         global $DB;
 
-        // Verify the user may manage the starting category.
-        $this->require_category_capability($categoryid, 'local/examdates:manage');
+        // Verify the user may access the starting category.
+        $this->require_category_capability($categoryid, $capability);
 
         if (!$includesub) {
             return $DB->get_records('course', ['category' => $categoryid], 'fullname');
         }
 
-        // Recursively collect subcategory IDs the user can manage.
+        // Recursively collect subcategory IDs the user can access.
         $catids = [$categoryid];
         $allcategories = $DB->get_records('course_categories', [], '', 'id,parent');
 
@@ -56,7 +66,7 @@ class manager {
             foreach ($allcategories as $cat) {
                 if (in_array($cat->parent, $catids) && !in_array($cat->id, $catids)) {
                     try {
-                        $this->require_category_capability($cat->id, 'local/examdates:manage');
+                        $this->require_category_capability($cat->id, $capability);
                         $catids[] = $cat->id;
                         $added = true;
                     } catch (\required_capability_exception $e) {
@@ -67,7 +77,7 @@ class manager {
             }
         }
 
-        list($insql, $params) = $DB->get_in_or_equal($catids, SQL_PARAMS_NAMED);
+        [$insql, $params] = $DB->get_in_or_equal($catids, SQL_PARAMS_NAMED);
         return $DB->get_records_select('course', "category $insql", $params, 'fullname');
     }
 
@@ -266,8 +276,11 @@ class manager {
         foreach ($preview as $courseid => $data) {
             // Course name links to the course (opens in a new tab).
             $courseurl = new \moodle_url('/course/view.php', ['id' => $courseid]);
-            $row = [\html_writer::link($courseurl, format_string($data['fullname']),
-                ['target' => '_blank'])];
+            $row = [\html_writer::link(
+                $courseurl,
+                format_string($data['fullname']),
+                ['target' => '_blank']
+            )];
 
             foreach (['exam', 'resit1', 'resit2'] as $type) {
                 $row[] = $this->render_preview_cell(isset($data[$type]) ? $data[$type] : null);
@@ -286,17 +299,22 @@ class manager {
      */
     private function render_preview_cell($cell) {
         if (!isset($cell)) {
-            return \html_writer::tag('span', '— ' . get_string('not_selected', 'local_examdates') . ' —',
-                ['class' => 'text-muted']);
+            return \html_writer::tag(
+                'span',
+                '— ' . get_string('not_selected', 'local_examdates') . ' —',
+                ['class' => 'text-muted']
+            );
         }
         if ($cell['status'] === 'missing') {
             return \html_writer::tag('span', get_string('notfound', 'local_examdates'), ['class' => 'text-danger']);
         }
         if ($cell['status'] === 'no_change') {
             $old = $this->format_date_range($cell['old_open'], $cell['old_close']);
-            return \html_writer::tag('span',
+            return \html_writer::tag(
+                'span',
                 $old . ' ' . \html_writer::tag('small', '(' . get_string('nochanges', 'local_examdates') . ')'),
-                ['class' => 'text-muted']);
+                ['class' => 'text-muted']
+            );
         }
         if ($cell['status'] === 'will_change') {
             $old = $this->format_date_range($cell['old_open'], $cell['old_close']);
@@ -397,8 +415,17 @@ class manager {
                     quiz_update_events($quiz);
                 }
 
-                $this->log_change($course, $quiz, $idnumber, $oldopen, $oldclose,
-                    $newopen, $newclose, $userid, $batchid);
+                $this->log_change(
+                    $course,
+                    $quiz,
+                    $idnumber,
+                    $oldopen,
+                    $oldclose,
+                    $newopen,
+                    $newclose,
+                    $userid,
+                    $batchid
+                );
 
                 $coursechanged = true;
 
@@ -438,8 +465,17 @@ class manager {
      *
      * Honours the local_examdates/enable_logging setting (default: on).
      */
-    private function log_change($course, $quiz, $idnumber, $oldopen, $oldclose,
-            $newopen, $newclose, $userid, $batchid) {
+    private function log_change(
+        $course,
+        $quiz,
+        $idnumber,
+        $oldopen,
+        $oldclose,
+        $newopen,
+        $newclose,
+        $userid,
+        $batchid
+    ) {
         global $DB, $USER;
 
         if (get_config('local_examdates', 'enable_logging') === '0') {
@@ -579,7 +615,9 @@ class manager {
         $total = $DB->count_records_sql("SELECT COUNT(*) FROM {local_examdates_log} $where", $params);
         $records = $DB->get_records_sql(
             "SELECT * FROM {local_examdates_log} $where ORDER BY timecreated DESC",
-            $params, $page * $perpage, $perpage
+            $params,
+            $page * $perpage,
+            $perpage
         );
 
         return ['records' => $records, 'total' => $total, 'page' => $page, 'perpage' => $perpage];
@@ -590,7 +628,9 @@ class manager {
      *
      * @param int $logid Log record ID
      * @param int $userid User performing the rollback
-     * @return bool Success
+     * @return bool True on success.
+     * @throws \moodle_exception If the log entry, its course or its quiz can no longer be found.
+     * @throws \required_capability_exception If the user cannot manage exam dates in that category.
      */
     public function rollback_change($logid, $userid) {
         global $DB, $CFG;
@@ -599,15 +639,33 @@ class manager {
 
         $log = $DB->get_record('local_examdates_log', ['id' => $logid]);
         if (!$log) {
-            return false;
+            throw new \moodle_exception('error_lognotfound', 'local_examdates');
         }
 
-        $course = get_course($log->courseid);
+        // Only the most recent change for this quiz may be rolled back - rolling
+        // back an older entry would silently discard whatever changed after it.
+        $latestid = $DB->get_field_sql(
+            'SELECT MAX(id) FROM {local_examdates_log} WHERE quizid = :quizid',
+            ['quizid' => $log->quizid]
+        );
+        if ((int)$latestid !== (int)$log->id) {
+            throw new \moodle_exception('rollback_notice', 'local_examdates');
+        }
+
+        // The course may have been deleted since the change was logged (this is
+        // exactly why course_fullname/quiz_name are denormalised on the log row).
+        // get_course() throws rather than returning false, so this must be caught.
+        try {
+            $course = get_course($log->courseid, false);
+        } catch (\dml_missing_record_exception $e) {
+            throw new \moodle_exception('error_coursedeleted', 'local_examdates');
+        }
+
         $this->require_category_capability($course->category, 'local/examdates:manage');
 
         $quiz = $DB->get_record('quiz', ['id' => $log->quizid]);
         if (!$quiz) {
-            return false;
+            throw new \moodle_exception('error_quizdeleted', 'local_examdates');
         }
 
         $quiz->timeopen = $log->old_timeopen;
@@ -620,10 +678,15 @@ class manager {
         }
 
         $this->log_change(
-            $course, $quiz, $log->idnumber,
-            $log->new_timeopen, $log->new_timeclose,
-            $log->old_timeopen, $log->old_timeclose,
-            $userid, 'rollback_' . $log->batch_id
+            $course,
+            $quiz,
+            $log->idnumber,
+            $log->new_timeopen,
+            $log->new_timeclose,
+            $log->old_timeopen,
+            $log->old_timeclose,
+            $userid,
+            'rollback_' . $log->batch_id
         );
 
         rebuild_course_cache($course->id, true);

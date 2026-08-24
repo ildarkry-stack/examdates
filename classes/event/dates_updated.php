@@ -24,8 +24,6 @@
 
 namespace local_examdates\event;
 
-defined('MOODLE_INTERNAL') || die();
-
 /**
  * The dates_updated event class.
  *
@@ -39,7 +37,6 @@ defined('MOODLE_INTERNAL') || die();
  * }
  */
 class dates_updated extends \core\event\base {
-
     /**
      * Init method.
      */

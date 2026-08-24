@@ -34,13 +34,16 @@ use core_privacy\local\request\transform;
 use context;
 use context_system;
 
-defined('MOODLE_INTERNAL') || die();
-
+/**
+ * Privacy provider implementation for local_examdates.
+ *
+ * The plugin's only personal data is the local_examdates_log audit trail,
+ * which is treated as a site-wide (system context) log.
+ */
 class provider implements
-        \core_privacy\local\metadata\provider,
-        \core_privacy\local\request\core_userlist_provider,
-        \core_privacy\local\request\plugin\provider {
-
+    \core_privacy\local\metadata\provider,
+    \core_privacy\local\request\core_userlist_provider,
+    \core_privacy\local\request\plugin\provider {
     /**
      * Describe the personal data stored by this plugin.
      *
@@ -105,8 +108,11 @@ class provider implements
                 continue;
             }
 
-            $records = $DB->get_records('local_examdates_log',
-                ['userid' => $contextlist->get_user()->id], 'timecreated ASC');
+            $records = $DB->get_records(
+                'local_examdates_log',
+                ['userid' => $contextlist->get_user()->id],
+                'timecreated ASC'
+            );
 
             if (empty($records)) {
                 continue;
@@ -157,8 +163,10 @@ class provider implements
 
         foreach ($contextlist->get_contexts() as $context) {
             if ($context instanceof context_system) {
-                $DB->delete_records('local_examdates_log',
-                    ['userid' => $contextlist->get_user()->id]);
+                $DB->delete_records(
+                    'local_examdates_log',
+                    ['userid' => $contextlist->get_user()->id]
+                );
             }
         }
     }
@@ -176,7 +184,7 @@ class provider implements
             return;
         }
 
-        list($insql, $params) = $DB->get_in_or_equal($userlist->get_userids(), SQL_PARAMS_NAMED);
+        [$insql, $params] = $DB->get_in_or_equal($userlist->get_userids(), SQL_PARAMS_NAMED);
         $DB->delete_records_select('local_examdates_log', "userid $insql", $params);
     }
 }

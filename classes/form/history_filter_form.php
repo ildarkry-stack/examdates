@@ -29,8 +29,15 @@ defined('MOODLE_INTERNAL') || die();
 global $CFG;
 require_once($CFG->libdir . '/formslib.php');
 
+/**
+ * Filter form shown above the change-history table (course, user, test type,
+ * date range).
+ */
 class history_filter_form extends \moodleform {
-
+    /**
+     * Build the filter fields, populated from the option lists passed via
+     * customdata (courses/users/idnumbers that actually appear in the log).
+     */
     public function definition() {
         $mform = $this->_form;
         $cd = $this->_customdata;
@@ -45,27 +52,47 @@ class history_filter_form extends \moodleform {
 
         // Course filter (options are limited to courses that appear in the log).
         $courseoptions = [0 => get_string('all')] + $courses;
-        $mform->addElement('select', 'filtercourse',
-            get_string('filter_course', 'local_examdates'), $courseoptions);
+        $mform->addElement(
+            'select',
+            'filtercourse',
+            get_string('filter_course', 'local_examdates'),
+            $courseoptions
+        );
         $mform->setType('filtercourse', PARAM_INT);
 
         // User filter.
         $useroptions = [0 => get_string('all')] + $users;
-        $mform->addElement('select', 'filteruser',
-            get_string('filter_user', 'local_examdates'), $useroptions);
+        $mform->addElement(
+            'select',
+            'filteruser',
+            get_string('filter_user', 'local_examdates'),
+            $useroptions
+        );
         $mform->setType('filteruser', PARAM_INT);
 
         // Test type (idnumber) filter.
         $idoptions = ['' => get_string('all')] + $idnumbers;
-        $mform->addElement('select', 'filteridnumber',
-            get_string('filter_idnumber', 'local_examdates'), $idoptions);
+        $mform->addElement(
+            'select',
+            'filteridnumber',
+            get_string('filter_idnumber', 'local_examdates'),
+            $idoptions
+        );
         $mform->setType('filteridnumber', PARAM_ALPHANUMEXT);
 
         // Date range (both optional).
-        $mform->addElement('date_selector', 'filterfrom',
-            get_string('filter_date_from', 'local_examdates'), ['optional' => true]);
-        $mform->addElement('date_selector', 'filterto',
-            get_string('filter_date_to', 'local_examdates'), ['optional' => true]);
+        $mform->addElement(
+            'date_selector',
+            'filterfrom',
+            get_string('filter_date_from', 'local_examdates'),
+            ['optional' => true]
+        );
+        $mform->addElement(
+            'date_selector',
+            'filterto',
+            get_string('filter_date_to', 'local_examdates'),
+            ['optional' => true]
+        );
 
         $mform->addElement('submit', 'applyfilter', get_string('filter'));
     }

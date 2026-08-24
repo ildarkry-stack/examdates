@@ -25,9 +25,9 @@
 defined('MOODLE_INTERNAL') || die();
 
 if ($hassiteconfig) {
-
     // Management page (the actual tool).
-    $ADMIN->add('localplugins',
+    $ADMIN->add(
+        'localplugins',
         new admin_externalpage(
             'local_examdates',
             get_string('pluginname', 'local_examdates'),
@@ -37,8 +37,10 @@ if ($hassiteconfig) {
     );
 
     // Settings page.
-    $settings = new admin_settingpage('local_examdates_settings',
-        get_string('settings', 'local_examdates'));
+    $settings = new admin_settingpage(
+        'local_examdates_settings',
+        get_string('settings', 'local_examdates')
+    );
     $ADMIN->add('localplugins', $settings);
 
     // Enable logging.

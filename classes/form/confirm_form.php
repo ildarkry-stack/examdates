@@ -29,8 +29,14 @@ defined('MOODLE_INTERNAL') || die();
 global $CFG;
 require_once($CFG->libdir . '/formslib.php');
 
+/**
+ * Hidden-field confirmation form that re-posts the prepared bulk-update data
+ * back to index.php's apply action after the person confirms the preview.
+ */
 class confirm_form extends \moodleform {
-
+    /**
+     * Re-post the already-prepared, already-previewed data as hidden fields.
+     */
     public function definition() {
         $mform = $this->_form;
         $customdata = $this->_customdata;
@@ -58,23 +64,12 @@ class confirm_form extends \moodleform {
         $mform->addElement('hidden', 'sesskey', sesskey());
         $mform->setType('sesskey', PARAM_RAW);
 
-        if (!empty($customdata['courses'])) {
-            $courseids = array_keys($customdata['courses']);
-            $mform->addElement('hidden', 'courseids', implode(',', $courseids));
-            $mform->setType('courseids', PARAM_SEQUENCE);
-        }
-
-        if (!empty($customdata['stats'])) {
-            $mform->addElement('hidden', 'stats_tests', $customdata['stats']['total_updates']);
-            $mform->setType('stats_tests', PARAM_INT);
-
-            $mform->addElement('hidden', 'stats_courses', $customdata['stats']['courses_with_changes']);
-            $mform->setType('stats_courses', PARAM_INT);
-        }
-
         $buttonarray = [];
-        $buttonarray[] = &$mform->createElement('submit', 'submitbutton',
-            get_string('apply', 'local_examdates'));
+        $buttonarray[] = &$mform->createElement(
+            'submit',
+            'submitbutton',
+            get_string('apply', 'local_examdates')
+        );
         $buttonarray[] = &$mform->createElement('cancel', 'cancelbutton', get_string('cancel'));
         $mform->addGroup($buttonarray, 'buttonar', '', [' '], false);
     }

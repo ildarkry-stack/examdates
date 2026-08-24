@@ -51,7 +51,6 @@ $action = optional_param('action', '', PARAM_ALPHA);
  * APPLY (submitted from confirm_form).
  */
 if ($action === 'apply') {
-
     // The confirm form's Cancel button must not apply anything - bail out first.
     if (optional_param('cancelbutton', '', PARAM_RAW) !== '') {
         redirect(new moodle_url('/local/examdates/index.php'));
@@ -126,14 +125,16 @@ if ($action === 'apply') {
 /*
  * PREVIEW (main form).
  */
-$mform = new \local_examdates\form\examdates_form();
+// A category may be preset via the URL (e.g. the "manage" link from
+// preview.php); it's only a default for the dropdown, not an access check.
+$presetcategoryid = optional_param('categoryid', 0, PARAM_INT);
+$mform = new \local_examdates\form\examdates_form(null, ['presetcategoryid' => $presetcategoryid]);
 
 if ($mform->is_cancelled()) {
     redirect(new moodle_url('/local/examdates/index.php'));
 }
 
 if ($data = $mform->get_data()) {
-
     $preparedata = new stdClass();
     $preparedata->categoryid  = $data->categoryid;
     $preparedata->include_sub = !empty($data->include_sub);
@@ -177,30 +178,32 @@ if ($data = $mform->get_data()) {
     echo $manager->render_preview_table($previewdata);
 
     if ($stats['total_updates'] > 0) {
+        echo html_writer::start_div(
+            'mt-4 p-3 border rounded',
+            ['style' => 'background-color:#e8f5e9;border-color:#4caf50 !important;']
+        );
 
-        echo html_writer::start_div('mt-4 p-3 border rounded',
-            ['style' => 'background-color:#e8f5e9;border-color:#4caf50 !important;']);
-
-        echo html_writer::tag('h4',
+        echo html_writer::tag(
+            'h4',
             get_string('confirm_apply_title', 'local_examdates'),
-            ['class' => 'text-success']);
+            ['class' => 'text-success']
+        );
 
-        echo html_writer::tag('p',
+        echo html_writer::tag(
+            'p',
             get_string('confirm_apply_text', 'local_examdates', (object)[
                 'tests'   => $stats['total_updates'],
                 'courses' => $stats['courses_with_changes'],
             ]),
-            ['class' => 'font-weight-bold', 'style' => 'font-size:1.1rem;']);
+            ['class' => 'font-weight-bold', 'style' => 'font-size:1.1rem;']
+        );
 
         $confirmform = new \local_examdates\form\confirm_form(null, [
-            'courses' => $courses,
-            'data'    => $preparedata,
-            'stats'   => $stats,
+            'data' => $preparedata,
         ]);
         $confirmform->display();
 
         echo html_writer::end_div();
-
     } else {
         echo $OUTPUT->notification(get_string('no_changes_made', 'local_examdates'), 'info');
         echo html_writer::link(
@@ -209,7 +212,6 @@ if ($data = $mform->get_data()) {
             ['class' => 'btn btn-secondary mt-3']
         );
     }
-
 } else {
     $mform->display();
 }
