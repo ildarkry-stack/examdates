@@ -2,6 +2,24 @@
 
 All notable changes to this plugin are documented in this file.
 
+## [1.3.3] - 2026-08-25
+
+### Changed
+- Version bump only, no functional changes - required to resubmit to the
+  Moodle plugins directory with a version number higher than the previous
+  (failed) submission attempt.
+
+## [1.3.2] - 2026-08-25
+
+### Added
+- `.github/workflows/moodle-ci.yml` - GitHub Actions CI, adapted from the
+  official `moodlehq/moodle-plugin-ci` `gha.dist.yml` template (PHP
+  8.1/8.2/8.3, `MOODLE_405_STABLE`, pgsql + mariadb). The Moodle plugins
+  directory's automated checker reads its "test results" from this
+  workflow's runs via the GitHub API rather than linting the uploaded ZIP
+  itself - without it (or with a private repo), it reports "Log file not
+  found" for every step regardless of code quality.
+
 ## [1.3.1] - 2026-08-24
 
 ### Removed
