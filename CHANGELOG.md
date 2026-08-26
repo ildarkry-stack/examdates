@@ -2,6 +2,20 @@
 
 All notable changes to this plugin are documented in this file.
 
+## [1.3.4] - 2026-08-25
+
+### Fixed
+- Real CI failures found once GitHub Actions actually ran (`moodle-plugin-ci
+  phpcs`/`phpdoc`), not visible in earlier local checks:
+  - Both lang files were organised into commented sections
+    (`// Main.`, `// Quiz types.`, etc.) rather than strict alphabetical
+    key order, which `moodle.Files.LangFilesOrdering` requires with
+    `--max-warnings 0`. Reordered every string key alphabetically and
+    removed the section comments (68 warnings/file).
+  - Three methods had incomplete `@param` docblocks relative to their
+    actual signatures: `examdates_form::set_default_time()`,
+    `manager::log_change()`, `manager::trigger_event()`.
+
 ## [1.3.3] - 2026-08-25
 
 ### Changed

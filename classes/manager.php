@@ -468,6 +468,16 @@ class manager {
      * Log a single change to the database.
      *
      * Honours the local_examdates/enable_logging setting (default: on).
+     *
+     * @param \stdClass $course Course record
+     * @param \stdClass $quiz Quiz record (post-update values)
+     * @param string $idnumber The quiz idnumber (exam/resit1/resit2)
+     * @param int $oldopen Previous timeopen
+     * @param int $oldclose Previous timeclose
+     * @param int $newopen New timeopen
+     * @param int $newclose New timeclose
+     * @param int $userid User performing the change
+     * @param string $batchid Batch identifier shared by one apply/rollback run
      */
     private function log_change(
         $course,
@@ -512,6 +522,12 @@ class manager {
 
     /**
      * Trigger the plugin's own event.
+     *
+     * @param int $userid User who made the change
+     * @param string $batchid Batch identifier for this apply/rollback run
+     * @param int $count Number of quiz-type slots changed
+     * @param int $categoryid Category the change was applied to
+     * @param int $coursecount Number of distinct courses affected
      */
     private function trigger_event($userid, $batchid, $count, $categoryid = 0, $coursecount = 0) {
         $event = \local_examdates\event\dates_updated::create([

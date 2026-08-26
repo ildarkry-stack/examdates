@@ -146,6 +146,11 @@ class examdates_form extends \moodleform {
 
     /**
      * Set a sensible default timestamp (today at hour:minute, user timezone).
+     *
+     * @param \MoodleQuickForm $mform The form to set the default on
+     * @param string $elementname Name of the date_time_selector element
+     * @param int $hour Default hour
+     * @param int $minute Default minute
      */
     private function set_default_time($mform, $elementname, $hour, $minute) {
         $defaultdate = usergetdate(time());
