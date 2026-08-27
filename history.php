@@ -166,6 +166,16 @@ if ($rollbackid) {
 
     $returnurl = new moodle_url($baseurl, $filterparams);
 
+    // Fetch display names up front, from the log row's own denormalised
+    // quiz_name/course_fullname (so this works even if rollback later fails
+    // because the course or quiz has since been deleted) - used to build a
+    // meaningful rollback_success/rollback_error message either way.
+    $rollbacklog = $DB->get_record('local_examdates_log', ['id' => $rollbackid]);
+    $rollbacka = (object)[
+        'quizname'   => $rollbacklog ? $rollbacklog->quiz_name : '',
+        'coursename' => $rollbacklog ? $rollbacklog->course_fullname : '',
+    ];
+
     if (!optional_param('confirm', 0, PARAM_BOOL)) {
         echo $OUTPUT->header();
         echo $OUTPUT->confirm(
@@ -185,7 +195,7 @@ if ($rollbackid) {
         $manager->rollback_change($rollbackid, $USER->id);
         redirect(
             $returnurl,
-            get_string('rollback_success', 'local_examdates'),
+            get_string('rollback_success', 'local_examdates', $rollbacka),
             null,
             \core\output\notification::NOTIFY_SUCCESS
         );
@@ -199,7 +209,7 @@ if ($rollbackid) {
     } catch (\moodle_exception $e) {
         redirect(
             $returnurl,
-            get_string('rollback_error', 'local_examdates') . ': ' . $e->getMessage(),
+            get_string('rollback_error', 'local_examdates', $rollbacka) . ': ' . $e->getMessage(),
             null,
             \core\output\notification::NOTIFY_ERROR
         );
@@ -237,8 +247,8 @@ if (optional_param('export', '', PARAM_ALPHA) === 'csv') {
         $csv->add_data([
             userdate($record->timecreated, $datetimeformat),
             $user ? fullname($user) : '-',
-            $record->course_fullname,
-            $record->quiz_name,
+            format_string($record->course_fullname),
+            format_string($record->quiz_name),
             $record->idnumber,
             $manager->format_date_range($record->old_timeopen, $record->old_timeclose),
             $manager->format_date_range($record->new_timeopen, $record->new_timeclose),

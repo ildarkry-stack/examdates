@@ -2,6 +2,67 @@
 
 All notable changes to this plugin are documented in this file.
 
+## [1.4.0] - 2026-08-27
+
+### Fixed
+- **Critical, install-blocking bug on Moodle 5.0/5.1:** `db/messages.php`
+  used `MESSAGE_DEFAULT_LOGGEDIN`/`MESSAGE_DEFAULT_LOGGEDOFF`, which don't
+  exist as of at least Moodle 4.5 (our own stated minimum) - they were
+  replaced by a single `MESSAGE_DEFAULT_ENABLED` constant. Referencing an
+  undefined constant is a fatal `Error` on PHP 8+, which crashed plugin
+  installation entirely (`upgrade_noncore()` → `message_update_providers()`
+  → require of `db/messages.php`). Confirmed via a real install against a
+  live Moodle 5.1 + MariaDB instance: install failed before the fix,
+  completed successfully after it.
+- **Critical bug on Moodle 5.0/5.1:** `cli/update_exam_dates.php` called
+  `cron_setup_user()` to run as the site admin. On Moodle 4.5 this
+  (deprecated) function still worked - it internally called
+  `\core\cron::setup_user()`. On Moodle 5.0+ its body was reduced to just a
+  deprecation notice, silently leaving `$USER` unset and every downstream
+  capability check failing. Switched to calling `\core\cron::setup_user()`
+  directly. Confirmed on a live Moodle 5.1 instance: `--dryrun` and a real
+  apply both now succeed, with the quiz row, calendar events, and audit
+  log all updated correctly.
+- Also verified end-to-end on the same live 5.1 instance: `rollback_change()`
+  (dates correctly reverted, `action_type` correctly recorded as
+  `rollback`) and `apply_updates_task` (the background task runs, applies
+  dates, and - now that the messages.php fix is in - actually delivers the
+  completion notification, which was silently impossible before).
+
+### Changed
+- GitHub Actions CI matrix now also tests against `MOODLE_500_STABLE` and
+  `MOODLE_501_STABLE` (previously only `MOODLE_405_STABLE`), with PHP 8.1
+  excluded for those two branches since both require PHP 8.2 as a minimum
+  (confirmed against `admin/environment.xml` in each branch's own source -
+  4.5 requires 8.1, 5.0 and 5.1 require 8.2).
+- README now states Moodle 4.5/5.0/5.1 support, matching what CI verifies.
+
+## [1.3.5] - 2026-08-26
+
+### Fixed
+- **Real bug:** `rollback_success`/`rollback_error` notifications required
+  `{$a->quizname}`/`{$a->coursename}` placeholders that `history.php` never
+  supplied - users saw the literal, unparsed placeholder text instead of a
+  message. Now fetches the log row's denormalised quiz/course names up
+  front (works even if rollback then fails because the quiz/course has
+  since been deleted) and passes them through.
+- `manager::get_history()` sorted only by `timecreated DESC` with no
+  secondary key. A single bulk apply stamps every row in the batch with
+  the same `time()`, so ties had no stable order between page loads -
+  rows could shuffle across pagination boundaries. Added `, id DESC`.
+- CSV export in `history.php` output raw `course_fullname`/`quiz_name`
+  without `format_string()`, unlike the HTML table which correctly
+  filters both - multilang tags etc. would leak into the CSV untouched.
+- Removed the unsubstantiated "tested on Moodle 5.1" claim from the
+  README - CI only tests `MOODLE_405_STABLE`, so this was never actually
+  verified.
+- Tidied the Russian `idnumber` string, which redundantly said the same
+  thing in Russian and English side by side.
+- Documented a rollback edge case in the README: if a quiz is deleted and
+  recreated with the same ID number, the new quiz gets a fresh history -
+  the old quiz's log entries can no longer be rolled back (expected, not
+  a bug, but worth stating rather than leaving it to a support question).
+
 ## [1.3.4] - 2026-08-25
 
 ### Fixed

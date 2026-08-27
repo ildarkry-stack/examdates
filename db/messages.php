@@ -31,8 +31,10 @@ $messageproviders = [
     // page for the result.
     'apply_complete' => [
         'defaults' => [
-            'popup' => MESSAGE_PERMITTED + MESSAGE_DEFAULT_LOGGEDIN + MESSAGE_DEFAULT_LOGGEDOFF,
-            'email' => MESSAGE_PERMITTED + MESSAGE_DEFAULT_LOGGEDIN + MESSAGE_DEFAULT_LOGGEDOFF,
+            // MESSAGE_DEFAULT_LOGGEDIN/MESSAGE_DEFAULT_LOGGEDOFF don't exist -
+            // they were merged into a single MESSAGE_DEFAULT_ENABLED flag.
+            'popup' => MESSAGE_PERMITTED + MESSAGE_DEFAULT_ENABLED,
+            'email' => MESSAGE_PERMITTED + MESSAGE_DEFAULT_ENABLED,
         ],
     ],
 

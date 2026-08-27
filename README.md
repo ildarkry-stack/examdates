@@ -23,7 +23,11 @@ changes are logged so they can be reviewed, exported and rolled back.
 - Before/after preview: see exactly what will change before applying anything.
 - Change history with filters (course, user, test type, date range),
   pagination and CSV export.
-- Per-change rollback to the previous dates.
+- Per-change rollback to the previous dates. Only the most recent change
+  for a given quiz can be rolled back, and rollback is tied to the quiz's
+  database id - if a quiz is deleted and a new one created with the same
+  ID number, its own change history starts fresh; the old quiz's log
+  entries can no longer be rolled back (this is expected, not a bug).
 - Category-level read-only preview for `local/examdates:preview` holders
   (e.g. teachers), reachable from that category's own admin menu - no
   Site administration access required.
@@ -33,7 +37,8 @@ changes are logged so they can be reviewed, exported and rolled back.
 
 ## Requirements
 
-- Moodle 4.5 or later (tested on Moodle 5.1).
+- Moodle 4.5, 5.0, or 5.1 (CI-tested against all three - see
+  `.github/workflows/moodle-ci.yml`).
 - PHP 8.2 or later.
 
 ## Installation

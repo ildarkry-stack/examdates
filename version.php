@@ -25,7 +25,7 @@
 defined('MOODLE_INTERNAL') || die();
 
 $plugin->component = 'local_examdates';
-$plugin->version   = 2026082502;
+$plugin->version   = 2026082701;
 $plugin->requires  = 2024100700; // Moodle 4.5.
 $plugin->maturity  = MATURITY_STABLE;
-$plugin->release   = '1.3.4';
+$plugin->release   = '1.4.0';

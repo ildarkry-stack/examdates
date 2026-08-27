@@ -598,7 +598,7 @@ class manager {
 
         $total = $DB->count_records_sql("SELECT COUNT(*) FROM {local_examdates_log} $where", $params);
         $records = $DB->get_records_sql(
-            "SELECT * FROM {local_examdates_log} $where ORDER BY timecreated DESC",
+            "SELECT * FROM {local_examdates_log} $where ORDER BY timecreated DESC, id DESC",
             $params,
             $page * $perpage,
             $perpage

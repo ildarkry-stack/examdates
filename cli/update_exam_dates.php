@@ -29,7 +29,6 @@ define('CLI_SCRIPT', true);
 
 require(__DIR__ . '/../../../config.php');
 require_once($CFG->libdir . '/clilib.php');
-require_once($CFG->libdir . '/cronlib.php');
 
 [$options, $unrecognized] = cli_get_params(
     [
@@ -69,7 +68,13 @@ if (!$DB->record_exists('course_categories', ['id' => $categoryid])) {
 
 // Run as the primary admin: this is a trusted, server-side operation rather
 // than an action taken by a specific logged-in web user.
-cron_setup_user();
+//
+// cron_setup_user() (deprecated since Moodle 4.2) still worked on 4.5 - it
+// internally called \core\cron::setup_user() - but on Moodle 5.0+ it was
+// reduced to a no-op stub that only emits a deprecation notice and does
+// nothing else, silently leaving $USER unset and every capability check
+// below failing. Call the real implementation directly instead.
+\core\cron::setup_user();
 require_capability('local/examdates:bulkupdate', context_system::instance());
 
 $dryrun = (bool)$options['dryrun'];
