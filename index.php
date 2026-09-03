@@ -150,16 +150,35 @@ if ($action === 'apply') {
 
 /*
  * PREVIEW (main form).
+ *
+ * Preview rows are paginated. The tiny form state is kept in the current
+ * user's Moodle session behind a random token, so paging links do not need to
+ * expose all selected dates/idnumbers in the URL and do not re-run the form.
  */
+if (!isset($SESSION->local_examdates_preview_states) || !is_array($SESSION->local_examdates_preview_states)) {
+    $SESSION->local_examdates_preview_states = [];
+}
+
+// Expire stale preview state so repeated previews cannot grow a session forever.
+$previewcutoff = time() - HOURSECS;
+foreach ($SESSION->local_examdates_preview_states as $token => $state) {
+    if (empty($state['created']) || $state['created'] < $previewcutoff) {
+        unset($SESSION->local_examdates_preview_states[$token]);
+    }
+}
+
 // A category may be preset via the URL (e.g. the "manage" link from
 // preview.php); it's only a default for the dropdown, not an access check.
 $presetcategoryid = optional_param('categoryid', 0, PARAM_INT);
+$previewtoken = optional_param('previewtoken', '', PARAM_ALPHANUM);
+$page = max(0, optional_param('page', 0, PARAM_INT));
 $mform = new \local_examdates\form\examdates_form(null, ['presetcategoryid' => $presetcategoryid]);
 
 if ($mform->is_cancelled()) {
     redirect(new moodle_url('/local/examdates/index.php'));
 }
 
+$preparedata = null;
 if ($data = $mform->get_data()) {
     $preparedata = new stdClass();
     $preparedata->categoryid  = $data->categoryid;
@@ -179,31 +198,74 @@ if ($data = $mform->get_data()) {
         }
     }
 
-    $courses = $manager->get_courses_by_category($data->categoryid, !empty($data->include_sub));
+    $previewtoken = random_string(32);
+    $SESSION->local_examdates_preview_states[$previewtoken] = [
+        'created' => time(),
+        'mode' => 'manage',
+        'categoryid' => (int)$preparedata->categoryid,
+        'data' => $preparedata,
+    ];
+    $page = 0;
+} elseif ($previewtoken !== '') {
+    $state = $SESSION->local_examdates_preview_states[$previewtoken] ?? null;
+    if ($state && ($state['mode'] ?? '') === 'manage' && !empty($state['data'])) {
+        $preparedata = $state['data'];
+    } else {
+        echo $OUTPUT->notification(get_string('preview_expired', 'local_examdates'), 'warning');
+    }
+}
 
-    if (empty($courses)) {
+if ($preparedata) {
+    $totalcourses = $manager->count_courses_by_category(
+        $preparedata->categoryid,
+        !empty($preparedata->include_sub)
+    );
+
+    if ($totalcourses === 0) {
         echo $OUTPUT->notification(get_string('no_courses_found', 'local_examdates'), 'warning');
         $mform->display();
         echo $OUTPUT->footer();
         exit;
     }
 
+    $perpage = \local_examdates\manager::PREVIEW_PAGE_SIZE;
+    $lastpage = max(0, (int)ceil($totalcourses / $perpage) - 1);
+    $page = min($page, $lastpage);
+    $courses = $manager->get_courses_by_category(
+        $preparedata->categoryid,
+        !empty($preparedata->include_sub),
+        'local/examdates:manage',
+        null,
+        $page * $perpage,
+        $perpage
+    );
+
     $previewdata = $manager->get_preview_data($courses, $preparedata);
     $stats = $previewdata['stats'];
 
     echo $OUTPUT->notification(
-        get_string('preview_stats_message', 'local_examdates', (object)[
+        get_string('preview_page_stats_message', 'local_examdates', (object)[
             'tests'   => $stats['total_updates'],
             'courses' => $stats['courses_with_changes'],
             'errors'  => $stats['total_errors'],
+            'shown'   => count($courses),
+            'total'   => $totalcourses,
         ]),
         'info'
     );
 
-    // Show the detailed before/after table.
-    echo $manager->render_preview_table($previewdata);
+    $pagingurl = new moodle_url('/local/examdates/index.php', ['previewtoken' => $previewtoken]);
+    echo $OUTPUT->paging_bar($totalcourses, $page, $perpage, $pagingurl);
 
-    if ($stats['total_updates'] > 0) {
+    // Only the current page is materialised and rendered.
+    echo $manager->render_preview_table($previewdata);
+    echo $OUTPUT->paging_bar($totalcourses, $page, $perpage, $pagingurl);
+
+    // With more than one page, the current page cannot prove that the entire
+    // scope has no changes. Applying still processes every course in bounded
+    // background chunks, so keep the confirmation available for the full scope.
+    $showconfirm = ($stats['total_updates'] > 0 || $totalcourses > $perpage);
+    if ($showconfirm) {
         echo html_writer::start_div(
             'mt-4 p-3 border rounded',
             ['style' => 'background-color:#e8f5e9;border-color:#4caf50 !important;']
@@ -215,12 +277,16 @@ if ($data = $mform->get_data()) {
             ['class' => 'text-success']
         );
 
+        $confirmtext = $totalcourses > $perpage
+            ? get_string('confirm_apply_text_paged', 'local_examdates', (object)['total' => $totalcourses])
+            : get_string('confirm_apply_text', 'local_examdates', (object)[
+                'tests' => $stats['total_updates'],
+                'courses' => $stats['courses_with_changes'],
+            ]);
+
         echo html_writer::tag(
             'p',
-            get_string('confirm_apply_text', 'local_examdates', (object)[
-                'tests'   => $stats['total_updates'],
-                'courses' => $stats['courses_with_changes'],
-            ]),
+            $confirmtext,
             ['class' => 'font-weight-bold', 'style' => 'font-size:1.1rem;']
         );
 

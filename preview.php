@@ -55,6 +55,19 @@ if (!$canmanage) {
 }
 
 $manager = new \local_examdates\manager();
+if (!isset($SESSION->local_examdates_preview_states) || !is_array($SESSION->local_examdates_preview_states)) {
+    $SESSION->local_examdates_preview_states = [];
+}
+
+$previewcutoff = time() - HOURSECS;
+foreach ($SESSION->local_examdates_preview_states as $token => $state) {
+    if (empty($state['created']) || $state['created'] < $previewcutoff) {
+        unset($SESSION->local_examdates_preview_states[$token]);
+    }
+}
+
+$previewtoken = optional_param('previewtoken', '', PARAM_ALPHANUM);
+$page = max(0, optional_param('page', 0, PARAM_INT));
 
 $mform = new \local_examdates\form\examdates_form(null, [
     'fixedcategoryid'   => $categoryid,
@@ -65,6 +78,7 @@ if ($mform->is_cancelled()) {
     redirect(new moodle_url('/local/examdates/preview.php', ['categoryid' => $categoryid]));
 }
 
+$preparedata = null;
 if ($data = $mform->get_data()) {
     $preparedata = new stdClass();
     $preparedata->categoryid = $categoryid;
@@ -84,34 +98,77 @@ if ($data = $mform->get_data()) {
         }
     }
 
-    // Checked against 'preview' rather than 'manage', so this also works for
-    // preview-only users; a manager sees exactly the same result set.
-    $courses = $manager->get_courses_by_category(
+    $previewtoken = random_string(32);
+    $SESSION->local_examdates_preview_states[$previewtoken] = [
+        'created' => time(),
+        'mode' => 'preview',
+        'categoryid' => $categoryid,
+        'data' => $preparedata,
+    ];
+    $page = 0;
+} elseif ($previewtoken !== '') {
+    $state = $SESSION->local_examdates_preview_states[$previewtoken] ?? null;
+    if (
+        $state
+        && ($state['mode'] ?? '') === 'preview'
+        && (int)($state['categoryid'] ?? 0) === $categoryid
+        && !empty($state['data'])
+    ) {
+        $preparedata = $state['data'];
+    } else {
+        echo $OUTPUT->notification(get_string('preview_expired', 'local_examdates'), 'warning');
+    }
+}
+
+if ($preparedata) {
+    // Checked against 'preview' rather than 'manage', so preview-only users and
+    // managers see the same bounded result set.
+    $totalcourses = $manager->count_courses_by_category(
         $categoryid,
-        !empty($data->include_sub),
+        !empty($preparedata->include_sub),
         'local/examdates:preview'
     );
 
-    if (empty($courses)) {
+    if ($totalcourses === 0) {
         echo $OUTPUT->notification(get_string('no_courses_found', 'local_examdates'), 'warning');
         $mform->display();
         echo $OUTPUT->footer();
         exit;
     }
 
+    $perpage = \local_examdates\manager::PREVIEW_PAGE_SIZE;
+    $lastpage = max(0, (int)ceil($totalcourses / $perpage) - 1);
+    $page = min($page, $lastpage);
+    $courses = $manager->get_courses_by_category(
+        $categoryid,
+        !empty($preparedata->include_sub),
+        'local/examdates:preview',
+        null,
+        $page * $perpage,
+        $perpage
+    );
+
     $previewdata = $manager->get_preview_data($courses, $preparedata);
     $stats = $previewdata['stats'];
 
     echo $OUTPUT->notification(
-        get_string('preview_stats_message', 'local_examdates', (object)[
+        get_string('preview_page_stats_message', 'local_examdates', (object)[
             'tests'   => $stats['total_updates'],
             'courses' => $stats['courses_with_changes'],
             'errors'  => $stats['total_errors'],
+            'shown'   => count($courses),
+            'total'   => $totalcourses,
         ]),
         'info'
     );
 
+    $pagingurl = new moodle_url('/local/examdates/preview.php', [
+        'categoryid' => $categoryid,
+        'previewtoken' => $previewtoken,
+    ]);
+    echo $OUTPUT->paging_bar($totalcourses, $page, $perpage, $pagingurl);
     echo $manager->render_preview_table($previewdata);
+    echo $OUTPUT->paging_bar($totalcourses, $page, $perpage, $pagingurl);
 
     if ($canmanage) {
         // A manager can go straight on to apply the change, category preset.

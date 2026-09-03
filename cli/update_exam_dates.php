@@ -106,14 +106,14 @@ if (empty($preparedata->update_exam) && empty($preparedata->update_resit1) && em
 }
 
 $manager = new \local_examdates\manager();
-$courses = $manager->get_courses_by_category(
+$totalcourses = $manager->count_courses_by_category(
     $categoryid,
     (bool)$options['includesub'],
     'local/examdates:manage',
     get_admin()->id
 );
 
-if (empty($courses)) {
+if ($totalcourses === 0) {
     cli_writeln(get_string('no_courses_found', 'local_examdates'));
     exit(0);
 }
@@ -121,8 +121,38 @@ if (empty($courses)) {
 if ($dryrun) {
     cli_writeln(get_string('cli_dryrun', 'local_examdates'));
 
-    $preview = $manager->get_preview_data($courses, $preparedata);
-    $stats = $preview['stats'];
+    $stats = [
+        'total_courses' => 0,
+        'courses_with_changes' => 0,
+        'total_updates' => 0,
+        'total_errors' => 0,
+        'exam_updates' => 0,
+        'resit1_updates' => 0,
+        'resit2_updates' => 0,
+        'exam_missing' => 0,
+        'resit1_missing' => 0,
+        'resit2_missing' => 0,
+    ];
+
+    for ($offset = 0; $offset < $totalcourses; $offset += \local_examdates\manager::PROCESS_BATCH_SIZE) {
+        $courses = $manager->get_courses_by_category(
+            $categoryid,
+            (bool)$options['includesub'],
+            'local/examdates:manage',
+            get_admin()->id,
+            $offset,
+            \local_examdates\manager::PROCESS_BATCH_SIZE
+        );
+
+        if (empty($courses)) {
+            break;
+        }
+
+        $chunkpreview = $manager->get_preview_data($courses, $preparedata);
+        foreach ($stats as $key => $unused) {
+            $stats[$key] += $chunkpreview['stats'][$key];
+        }
+    }
 
     cli_writeln(get_string('preview_stats_message', 'local_examdates', (object)[
         'tests'   => $stats['total_updates'],
@@ -133,15 +163,48 @@ if ($dryrun) {
     exit(0);
 }
 
-$result = $manager->apply_updates($courses, $preparedata, get_admin()->id);
+$batchid = $manager->create_batch_id();
+$updatedcount = 0;
+$errorcount = 0;
+$skippedcount = 0;
+$changedcoursecount = 0;
 
-foreach ($result['errors'] as $error) {
-    cli_writeln($error);
+for ($offset = 0; $offset < $totalcourses; $offset += \local_examdates\manager::PROCESS_BATCH_SIZE) {
+    $courses = $manager->get_courses_by_category(
+        $categoryid,
+        (bool)$options['includesub'],
+        'local/examdates:manage',
+        get_admin()->id,
+        $offset,
+        \local_examdates\manager::PROCESS_BATCH_SIZE
+    );
+
+    if (empty($courses)) {
+        break;
+    }
+
+    $result = $manager->apply_updates($courses, $preparedata, get_admin()->id, $batchid, false);
+    foreach ($result['errors'] as $error) {
+        cli_writeln($error);
+    }
+
+    $updatedcount += count($result['updated']);
+    $errorcount += count($result['errors']);
+    $skippedcount += count($result['skipped']);
+    $changedcoursecount += count(array_unique(array_column($result['updated'], 'courseid')));
 }
 
+$manager->trigger_batch_event(
+    get_admin()->id,
+    $batchid,
+    $updatedcount,
+    $categoryid,
+    $changedcoursecount
+);
+
 cli_writeln(get_string('cli_success', 'local_examdates', (object)[
-    'updated' => count($result['updated']),
-    'total'   => count($result['updated']) + count($result['errors']) + count($result['skipped']),
+    'updated' => $updatedcount,
+    'total'   => $updatedcount + $errorcount + $skippedcount,
 ]));
 
 exit(0);

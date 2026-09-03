@@ -2,6 +2,46 @@
 
 All notable changes to this plugin are documented in this file.
 
+## [1.4.3] - 2026-09-03
+
+### Fixed
+- Added bounded course retrieval to `manager::get_courses_by_category()` using
+  Moodle DML `limitfrom`/`limitnum` parameters and a matching
+  `count_courses_by_category()` query. Web previews no longer materialise an
+  entire large category in memory.
+- Added standard Moodle pagination to both management and read-only preview
+  pages (50 courses per page). Preview form state is kept in the current
+  user's session behind a short-lived random token so paging URLs stay small.
+- Background apply tasks and the CLI now iterate over the complete selected
+  course scope in batches of 500 instead of loading all courses at once. One
+  logical bulk operation keeps a shared batch id and emits one aggregate event.
+- Descendant category discovery now reads only the selected category branch via
+  a recordset, instead of loading every course category on the site.
+
+## [1.4.2] - 2026-09-03
+
+### Fixed
+- Added the required `messageprovider:apply_complete` language string for the
+  `apply_complete` message provider declared in `db/messages.php`. This fixes
+  Moodle Plugin Checker validation and gives the provider a readable name in
+  notification preferences.
+- Added the equivalent Russian translation for the message provider name.
+
+## [1.4.1] - 2026-09-03
+
+### Fixed
+- Removed the N+1 database-read pattern from `manager::get_current_dates()`.
+  Matching quiz activities are now preloaded with `get_records_sql()` and
+  `get_in_or_equal()` in bounded batches, then the preview loops only read
+  from the in-memory result map.
+- Reused the same preloaded quiz map in `manager::apply_updates()`, removing
+  the repeated course-module and quiz SELECTs from its nested course/type
+  loops as well. Database writes remain per changed quiz because each quiz
+  must still be updated and have its calendar events synchronised.
+- When `apply_updates()` is called with reduced course records that omit the
+  category field, missing course categories are now loaded in one batch
+  instead of falling back to `get_course()` inside the course loop.
+
 ## [1.4.0] - 2026-08-27
 
 ### Fixed

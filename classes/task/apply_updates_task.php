@@ -53,7 +53,7 @@ class apply_updates_task extends \core\task\adhoc_task {
         $manager = new \local_examdates\manager();
 
         try {
-            $courses = $manager->get_courses_by_category(
+            $totalcourses = $manager->count_courses_by_category(
                 $data->categoryid,
                 !empty($data->include_sub),
                 'local/examdates:manage',
@@ -64,21 +64,54 @@ class apply_updates_task extends \core\task\adhoc_task {
             return;
         }
 
-        if (empty($courses)) {
+        if ($totalcourses === 0) {
             $this->notify_user($data->userid, get_string('no_courses_found', 'local_examdates'));
             return;
         }
 
-        $result = $manager->apply_updates($courses, $data, $data->userid);
+        // Process the complete category scope in bounded chunks. This keeps the
+        // adhoc task's memory use stable even for thousands of courses while
+        // retaining one logical batch id and one aggregate Moodle event.
+        $batchid = $manager->create_batch_id();
+        $updatedcount = 0;
+        $errorcount = 0;
+        $changedcoursecount = 0;
 
-        $uniquecourses = count(array_unique(array_column($result['updated'], 'courseid')));
+        for ($offset = 0; $offset < $totalcourses; $offset += \local_examdates\manager::PROCESS_BATCH_SIZE) {
+            $courses = $manager->get_courses_by_category(
+                $data->categoryid,
+                !empty($data->include_sub),
+                'local/examdates:manage',
+                $data->userid,
+                $offset,
+                \local_examdates\manager::PROCESS_BATCH_SIZE
+            );
+
+            if (empty($courses)) {
+                break;
+            }
+
+            $result = $manager->apply_updates($courses, $data, $data->userid, $batchid, false);
+            $updatedcount += count($result['updated']);
+            $errorcount += count($result['errors']);
+            $changedcoursecount += count(array_unique(array_column($result['updated'], 'courseid')));
+        }
+
+        $manager->trigger_batch_event(
+            $data->userid,
+            $batchid,
+            $updatedcount,
+            (int)$data->categoryid,
+            $changedcoursecount
+        );
+
         $message = get_string('changes_applied_detailed', 'local_examdates', (object)[
-            'tests'   => count($result['updated']),
-            'courses' => $uniquecourses,
+            'tests'   => $updatedcount,
+            'courses' => $changedcoursecount,
         ]);
 
-        if (!empty($result['errors'])) {
-            $message .= ' ' . get_string('errors', 'local_examdates') . ': ' . count($result['errors']);
+        if ($errorcount > 0) {
+            $message .= ' ' . get_string('errors', 'local_examdates') . ': ' . $errorcount;
         }
 
         $this->notify_user($data->userid, $message);

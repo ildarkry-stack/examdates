@@ -31,21 +31,135 @@ namespace local_examdates;
  * changes before they're applied, logging changes and rolling them back.
  */
 class manager {
+    /** Number of courses shown on one web preview page. */
+    public const PREVIEW_PAGE_SIZE = 50;
+
+    /** Number of courses processed at once by background/CLI bulk operations. */
+    public const PROCESS_BATCH_SIZE = 500;
+
+    /** Capability-aware category ID cache reused by count/page batch calls. */
+    private $categoryidcache = [];
+
     /**
-     * Get all courses in a category (and optionally its subcategories) that the
-     * current user is allowed to see, per the given capability.
+     * Resolve category IDs the requested user may access.
+     *
+     * Keeping this in one helper ensures the paged course query and the matching
+     * COUNT query use exactly the same category/capability scope.
      *
      * @param int $categoryid Category ID
      * @param bool $includesub Include subcategories
-     * @param string $capability Capability to check ('local/examdates:manage' or
-     *                           'local/examdates:preview'). Defaults to manage
-     *                           so existing callers keep their current behaviour.
-     * @param int|null $userid Check as this user rather than the current $USER -
-     *                         required when called from a background task, where
-     *                         there is no "current" web user to fall back to.
-     * @return array List of course records keyed by id
+     * @param string $capability Capability to check
+     * @param int|null $userid Check as this user rather than the current user
+     * @return int[] Accessible category IDs
+     */
+    private function get_accessible_category_ids(
+        $categoryid,
+        $includesub,
+        $capability,
+        $userid
+    ) {
+        global $DB, $USER;
+
+        $effectiveuserid = $userid === null ? (int)$USER->id : (int)$userid;
+        $cachekey = implode(':', [
+            (int)$categoryid,
+            $includesub ? 1 : 0,
+            $capability,
+            $effectiveuserid,
+        ]);
+        if (isset($this->categoryidcache[$cachekey])) {
+            return $this->categoryidcache[$cachekey];
+        }
+
+        $this->require_category_capability($categoryid, $capability, $userid);
+
+        if (!$includesub) {
+            $this->categoryidcache[$cachekey] = [(int)$categoryid];
+            return $this->categoryidcache[$cachekey];
+        }
+
+        // Only inspect the selected branch rather than loading every category
+        // on the site. Category paths are hierarchical (e.g. /1/7/24).
+        $category = $DB->get_record('course_categories', ['id' => $categoryid], 'id,path', MUST_EXIST);
+        $pathlike = $DB->sql_like('path', ':pathlike');
+        $sql = "SELECT id
+                  FROM {course_categories}
+                 WHERE id = :categoryid
+                    OR {$pathlike}
+              ORDER BY depth ASC, id ASC";
+        $categories = $DB->get_recordset_sql($sql, [
+            'categoryid' => $categoryid,
+            'pathlike' => $DB->sql_like_escape($category->path . '/') . '%',
+        ]);
+
+        $catids = [];
+        foreach ($categories as $cat) {
+            try {
+                $this->require_category_capability($cat->id, $capability, $userid);
+                $catids[] = (int)$cat->id;
+            } catch (\required_capability_exception $e) {
+                // No capability for this subcategory - skip it.
+                continue;
+            }
+        }
+        $categories->close();
+
+        $this->categoryidcache[$cachekey] = $catids;
+        return $this->categoryidcache[$cachekey];
+    }
+
+    /**
+     * Get a bounded page/batch of courses in a category and optional subcategories.
+     *
+     * The limit is deliberately explicit so web requests never materialise an
+     * arbitrarily large course array. Callers which need the full scope must
+     * iterate in batches using count_courses_by_category().
+     *
+     * @param int $categoryid Category ID
+     * @param bool $includesub Include subcategories
+     * @param string $capability Capability to check
+     * @param int|null $userid Check as this user rather than the current user
+     * @param int $limitfrom Zero-based record offset
+     * @param int $limitnum Maximum records to return
+     * @return array Course records keyed by id
      */
     public function get_courses_by_category(
+        $categoryid,
+        $includesub = true,
+        $capability = 'local/examdates:manage',
+        $userid = null,
+        $limitfrom = 0,
+        $limitnum = self::PREVIEW_PAGE_SIZE
+    ) {
+        global $DB;
+
+        $catids = $this->get_accessible_category_ids($categoryid, $includesub, $capability, $userid);
+        if (empty($catids)) {
+            return [];
+        }
+
+        [$insql, $params] = $DB->get_in_or_equal($catids, SQL_PARAMS_NAMED, 'category');
+        return $DB->get_records_select(
+            'course',
+            "category {$insql}",
+            $params,
+            'fullname ASC, id ASC',
+            'id,category,fullname',
+            max(0, (int)$limitfrom),
+            max(1, (int)$limitnum)
+        );
+    }
+
+    /**
+     * Count courses in the same capability-aware scope used by the paged query.
+     *
+     * @param int $categoryid Category ID
+     * @param bool $includesub Include subcategories
+     * @param string $capability Capability to check
+     * @param int|null $userid Check as this user rather than the current user
+     * @return int Number of courses
+     */
+    public function count_courses_by_category(
         $categoryid,
         $includesub = true,
         $capability = 'local/examdates:manage',
@@ -53,83 +167,102 @@ class manager {
     ) {
         global $DB;
 
-        // Verify the user may access the starting category.
-        $this->require_category_capability($categoryid, $capability, $userid);
-
-        if (!$includesub) {
-            return $DB->get_records('course', ['category' => $categoryid], 'fullname');
+        $catids = $this->get_accessible_category_ids($categoryid, $includesub, $capability, $userid);
+        if (empty($catids)) {
+            return 0;
         }
 
-        // Recursively collect subcategory IDs the user can access.
-        $catids = [$categoryid];
-        $allcategories = $DB->get_records('course_categories', [], '', 'id,parent');
-
-        $added = true;
-        while ($added) {
-            $added = false;
-            foreach ($allcategories as $cat) {
-                if (in_array($cat->parent, $catids) && !in_array($cat->id, $catids)) {
-                    try {
-                        $this->require_category_capability($cat->id, $capability, $userid);
-                        $catids[] = $cat->id;
-                        $added = true;
-                    } catch (\required_capability_exception $e) {
-                        // No capability for this subcategory - skip it.
-                        continue;
-                    }
-                }
-            }
-        }
-
-        [$insql, $params] = $DB->get_in_or_equal($catids, SQL_PARAMS_NAMED);
-        return $DB->get_records_select('course', "category $insql", $params, 'fullname');
+        [$insql, $params] = $DB->get_in_or_equal($catids, SQL_PARAMS_NAMED, 'category');
+        return (int)$DB->count_records_select('course', "category {$insql}", $params);
     }
 
     /**
-     * Find a quiz course module by its idnumber within a course.
+     * Preload matching quizzes for multiple courses and idnumbers.
      *
-     * @param int $courseid Course ID
-     * @param string $idnumber Custom idnumber (e.g. exam, resit1, resit2 or any user-defined value)
-     * @return \cm_info|\stdClass|null Course module-like object or null
+     * This intentionally performs a small number of batched database reads
+     * before any course/type iteration. It avoids the N+1 query pattern which would
+     * otherwise execute one or more SELECTs for every course and quiz type.
+     *
+     * @param array $courses List of course records
+     * @param array $idnumbers Quiz course-module idnumbers to find
+     * @return array Matching quiz records indexed by [courseid][idnumber]
      */
-    private function get_quiz_by_idnumber($courseid, $idnumber) {
+    private function preload_quizzes($courses, $idnumbers) {
         global $DB;
 
-        if (empty($idnumber)) {
-            return null;
+        if (empty($courses) || empty($idnumbers)) {
+            return [];
         }
 
-        // Most reliable: direct lookup via course_modules.
-        $sql = "SELECT cm.id AS cmid, cm.idnumber, cm.instance, cm.course,
-                       q.id AS quizid, q.name AS quizname, q.timeopen, q.timeclose
-                  FROM {course_modules} cm
-                  JOIN {modules} m ON m.id = cm.module
-                  JOIN {quiz} q ON q.id = cm.instance
-                 WHERE cm.course = :courseid
-                   AND m.name = 'quiz'
-                   AND cm.idnumber = :idnumber
-                   AND cm.deletioninprogress = 0";
-
-        $record = $DB->get_record_sql($sql, ['courseid' => $courseid, 'idnumber' => $idnumber]);
-
-        if ($record) {
-            $cm = new \stdClass();
-            $cm->id = $record->cmid;
-            $cm->idnumber = $record->idnumber;
-            $cm->instance = $record->instance;
-            $cm->course = $record->course;
-            return $cm;
-        }
-
-        // Fallback: search via modinfo cache.
-        $modinfo = get_fast_modinfo($courseid);
-        foreach ($modinfo->get_instances_of('quiz') as $cm) {
-            if ($cm->idnumber === $idnumber) {
-                return $cm;
+        $courseids = [];
+        foreach ($courses as $course) {
+            if (!empty($course->id)) {
+                $courseids[(int)$course->id] = (int)$course->id;
             }
         }
 
-        return null;
+        $wantedidnumbers = [];
+        foreach ($idnumbers as $idnumber) {
+            if (!empty($idnumber)) {
+                $wantedidnumbers[(string)$idnumber] = (string)$idnumber;
+            }
+        }
+
+        if (empty($courseids) || empty($wantedidnumbers)) {
+            return [];
+        }
+
+        [$idnumberinsql, $idnumberparams] = $DB->get_in_or_equal(
+            array_values($wantedidnumbers),
+            SQL_PARAMS_NAMED,
+            'idnumber'
+        );
+
+        $result = [];
+
+        // Keep each IN clause comfortably below database parameter limits.
+        // This still scales by batches rather than by individual courses.
+        foreach (array_chunk(array_values($courseids), 500) as $coursechunk) {
+            [$courseinsql, $courseparams] = $DB->get_in_or_equal(
+                $coursechunk,
+                SQL_PARAMS_NAMED,
+                'course'
+            );
+
+            $sql = "SELECT cm.id AS examdatescmid,
+                           q.*,
+                           cm.course AS examdatescourseid,
+                           cm.idnumber AS examdatesidnumber
+                      FROM {course_modules} cm
+                      JOIN {modules} m ON m.id = cm.module
+                      JOIN {quiz} q ON q.id = cm.instance
+                     WHERE cm.course $courseinsql
+                       AND cm.idnumber $idnumberinsql
+                       AND m.name = :modulename
+                       AND cm.deletioninprogress = 0
+                  ORDER BY cm.id ASC";
+
+            $params = array_merge($courseparams, $idnumberparams, ['modulename' => 'quiz']);
+            $records = $DB->get_records_sql($sql, $params);
+
+            foreach ($records as $record) {
+                $courseid = (int)$record->examdatescourseid;
+                $idnumber = (string)$record->examdatesidnumber;
+
+                // Match the former single-record lookup behaviour for duplicate
+                // idnumbers by keeping the first course module found.
+                if (isset($result[$courseid][$idnumber])) {
+                    continue;
+                }
+
+                // Strip helper aliases so the object remains a clean {quiz}
+                // record and can safely be passed to update_record() and Quiz APIs.
+                unset($record->examdatescmid, $record->examdatescourseid, $record->examdatesidnumber);
+                $result[$courseid][$idnumber] = $record;
+            }
+        }
+
+        return $result;
     }
 
     /**
@@ -140,21 +273,20 @@ class manager {
      * @return array Current dates data keyed by courseid
      */
     public function get_current_dates($courses, $idnumbers = null) {
-        global $DB;
-
         $examid   = isset($idnumbers->exam_idnumber) ? $idnumbers->exam_idnumber : 'exam';
         $resit1id = isset($idnumbers->resit1_idnumber) ? $idnumbers->resit1_idnumber : 'resit1';
         $resit2id = isset($idnumbers->resit2_idnumber) ? $idnumbers->resit2_idnumber : 'resit2';
 
         $types = ['exam' => $examid, 'resit1' => $resit1id, 'resit2' => $resit2id];
 
+        $quizzes = $this->preload_quizzes($courses, array_values($types));
+
         $result = [];
         foreach ($courses as $course) {
             $result[$course->id] = ['fullname' => $course->fullname];
 
             foreach ($types as $type => $idnumber) {
-                $cm = $this->get_quiz_by_idnumber($course->id, $idnumber);
-                $quiz = $cm ? $DB->get_record('quiz', ['id' => $cm->instance]) : false;
+                $quiz = $quizzes[$course->id][$idnumber] ?? null;
 
                 if ($quiz) {
                     $result[$course->id][$type] = [
@@ -338,16 +470,21 @@ class manager {
      * @param array $courses List of course records
      * @param object $newdates Prepared data
      * @param int $userid User performing the change
+     * @param string|null $batchid Optional id shared across multiple processing chunks
+     * @param bool $triggerevent Whether to emit the completion event for this call
      * @return array ['updated' => [], 'errors' => [], 'skipped' => []]
      */
-    public function apply_updates($courses, $newdates, $userid) {
+    public function apply_updates($courses, $newdates, $userid, $batchid = null, $triggerevent = true) {
         global $DB, $CFG;
 
         require_once($CFG->dirroot . '/mod/quiz/locallib.php');
 
-        // Unique batch id. random_string() is preferred over uniqid() and stays
-        // short enough that the 'rollback_' prefix still fits the char(40) column.
-        $batchid = random_string(24);
+        // One id may be shared across multiple bounded processing batches.
+        // random_string() stays short enough that the 'rollback_' prefix still
+        // fits the char(40) batch_id column.
+        if ($batchid === null) {
+            $batchid = $this->create_batch_id();
+        }
         $result = ['updated' => [], 'errors' => [], 'skipped' => []];
 
         // Resolve which quiz types are being updated.
@@ -370,9 +507,45 @@ class manager {
             }
         }
 
+        // Preload all quizzes that can be touched by this batch before entering
+        // the update loops. Reads are performed per batch rather than per
+        // course × selected quiz type.
+        $quizzes = $this->preload_quizzes($courses, array_values($updatetypes));
+
+        // get_courses_by_category() normally supplies category already. Keep
+        // apply_updates() robust for callers which pass reduced course records,
+        // but batch-load any missing categories rather than calling get_course()
+        // once per iteration.
+        $coursecategories = [];
+        $missingcategorycourseids = [];
+        foreach ($courses as $course) {
+            if (isset($course->category)) {
+                $coursecategories[(int)$course->id] = (int)$course->category;
+            } else {
+                $missingcategorycourseids[(int)$course->id] = (int)$course->id;
+            }
+        }
+        if (!empty($missingcategorycourseids)) {
+            $categoryrecords = $DB->get_records_list(
+                'course',
+                'id',
+                array_values($missingcategorycourseids),
+                '',
+                'id,category'
+            );
+            foreach ($categoryrecords as $categoryrecord) {
+                $coursecategories[(int)$categoryrecord->id] = (int)$categoryrecord->category;
+            }
+        }
+
         foreach ($courses as $course) {
             // Defence in depth: re-check capability for this course's category.
-            $categoryid = isset($course->category) ? $course->category : get_course($course->id)->category;
+            if (!isset($coursecategories[(int)$course->id])) {
+                $result['errors'][] = get_string('error_coursedeleted', 'local_examdates')
+                    . ': ' . format_string($course->fullname);
+                continue;
+            }
+            $categoryid = $coursecategories[(int)$course->id];
             try {
                 $this->require_category_capability($categoryid, 'local/examdates:manage', $userid);
             } catch (\required_capability_exception $e) {
@@ -384,16 +557,14 @@ class manager {
             $coursechanged = false;
 
             foreach ($updatetypes as $type => $idnumber) {
-                $cm = $this->get_quiz_by_idnumber($course->id, $idnumber);
-                if (!$cm) {
+                $quiz = $quizzes[$course->id][$idnumber] ?? null;
+                if (!$quiz) {
                     $result['errors'][] = get_string('missing_idnumber', 'local_examdates', (object)[
                         'coursename' => format_string($course->fullname),
                         'idnumber'   => s($idnumber),
                     ]);
                     continue;
                 }
-
-                $quiz = $DB->get_record('quiz', ['id' => $cm->instance], '*', MUST_EXIST);
 
                 $oldopen  = $quiz->timeopen;
                 $oldclose = $quiz->timeclose;
@@ -455,13 +626,37 @@ class manager {
             }
         }
 
-        if (!empty($result['updated'])) {
+        if ($triggerevent && !empty($result['updated'])) {
             $coursecount = count(array_unique(array_column($result['updated'], 'courseid')));
             $categoryid = isset($newdates->categoryid) ? (int)$newdates->categoryid : 0;
             $this->trigger_event($userid, $batchid, count($result['updated']), $categoryid, $coursecount);
         }
 
         return $result;
+    }
+
+    /**
+     * Create an identifier shared by all chunks of one logical bulk operation.
+     *
+     * @return string Batch identifier
+     */
+    public function create_batch_id() {
+        return random_string(24);
+    }
+
+    /**
+     * Emit one aggregate event after a chunked bulk operation finishes.
+     *
+     * @param int $userid User who made the change
+     * @param string $batchid Shared batch identifier
+     * @param int $count Number of tests updated
+     * @param int $categoryid Selected category
+     * @param int $coursecount Number of courses changed
+     */
+    public function trigger_batch_event($userid, $batchid, $count, $categoryid, $coursecount) {
+        if ($count > 0) {
+            $this->trigger_event($userid, $batchid, $count, $categoryid, $coursecount);
+        }
     }
 
     /**
