@@ -2,6 +2,14 @@
 
 All notable changes to this plugin are documented in this file.
 
+## [1.4.4] - 2026-09-03
+
+### Fixed
+- Fixed Moodle CodeSniffer findings introduced by the pagination changes: added
+  the required `@var` tag for the category ID cache property, capitalised the
+  affected inline comment, replaced `elseif` with Moodle-style `else if`, and
+  restored alphabetical ordering of preview language string keys.
+
 ## [1.4.3] - 2026-09-03
 
 ### Fixed

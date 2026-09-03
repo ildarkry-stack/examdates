@@ -37,7 +37,11 @@ class manager {
     /** Number of courses processed at once by background/CLI bulk operations. */
     public const PROCESS_BATCH_SIZE = 500;
 
-    /** Capability-aware category ID cache reused by count/page batch calls. */
+    /**
+     * Capability-aware category ID cache reused by count/page batch calls.
+     *
+     * @var array
+     */
     private $categoryidcache = [];
 
     /**
@@ -512,7 +516,7 @@ class manager {
         // course × selected quiz type.
         $quizzes = $this->preload_quizzes($courses, array_values($updatetypes));
 
-        // get_courses_by_category() normally supplies category already. Keep
+        // Get courses by category normally supplies the category already. Keep
         // apply_updates() robust for callers which pass reduced course records,
         // but batch-load any missing categories rather than calling get_course()
         // once per iteration.

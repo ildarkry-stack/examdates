@@ -106,7 +106,7 @@ if ($data = $mform->get_data()) {
         'data' => $preparedata,
     ];
     $page = 0;
-} elseif ($previewtoken !== '') {
+} else if ($previewtoken !== '') {
     $state = $SESSION->local_examdates_preview_states[$previewtoken] ?? null;
     if (
         $state
