@@ -657,7 +657,7 @@ class manager {
 
         $activities = $this->preload_activities($courses, $targets);
 
-        // get_courses_by_category() normally supplies category. Batch-load any
+        // The get_courses_by_category() method normally supplies category. Batch-load any
         // missing values rather than introducing per-course database reads.
         $coursecategories = [];
         $missingcategorycourseids = [];
