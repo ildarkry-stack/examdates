@@ -73,5 +73,37 @@ function xmldb_local_examdates_upgrade($oldversion) {
         upgrade_plugin_savepoint(true, 2026060503, 'local', 'examdates');
     }
 
+    // Generalise log rows so Quiz and Assignment changes share one audit trail.
+    if ($oldversion < 2026090304) {
+        $table = new xmldb_table('local_examdates_log');
+
+        $fields = [
+            new xmldb_field('modulename', XMLDB_TYPE_CHAR, '20', null, XMLDB_NOTNULL, null, 'quiz', 'course_fullname'),
+            new xmldb_field('instanceid', XMLDB_TYPE_INTEGER, '10', XMLDB_UNSIGNED, XMLDB_NOTNULL, null, '0', 'modulename'),
+            new xmldb_field('activity_name', XMLDB_TYPE_CHAR, '255', null, null, null, null, 'instanceid'),
+            new xmldb_field('extra_data', XMLDB_TYPE_TEXT, null, null, null, null, null, 'new_timeclose'),
+        ];
+        foreach ($fields as $field) {
+            if (!$dbman->field_exists($table, $field)) {
+                $dbman->add_field($table, $field);
+            }
+        }
+
+        // Existing rows are Quiz changes. Populate the generic identity fields
+        // so history and rollback work uniformly after the upgrade.
+        $DB->execute(
+            "UPDATE {local_examdates_log}
+                SET modulename = 'quiz', instanceid = quizid, activity_name = quiz_name
+              WHERE instanceid = 0"
+        );
+
+        $activityindex = new xmldb_index('activity_idx', XMLDB_INDEX_NOTUNIQUE, ['modulename', 'instanceid']);
+        if (!$dbman->index_exists($table, $activityindex)) {
+            $dbman->add_index($table, $activityindex);
+        }
+
+        upgrade_plugin_savepoint(true, 2026090304, 'local', 'examdates');
+    }
+
     return true;
 }

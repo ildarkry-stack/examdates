@@ -23,7 +23,7 @@
  */
 
 /**
- * Add a link to the category-level exam dates preview to that category's own
+ * Add a link to the category-level assessment dates preview to that category's own
  * admin menu.
  *
  * This is what makes local/examdates:preview actually reachable: index.php

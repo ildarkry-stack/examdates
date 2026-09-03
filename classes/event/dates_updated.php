@@ -15,7 +15,7 @@
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
 /**
- * Event fired after a batch of exam dates has been updated.
+ * Event fired after a batch of assessment activity dates has been updated.
  *
  * @package    local_examdates
  * @copyright  2026 Ильдар
@@ -31,7 +31,7 @@ namespace local_examdates\event;
  *      Extra information about the event.
  *
  *      - string batch_id: Unique identifier of the bulk operation.
- *      - int updates_count: Number of quizzes updated in this batch.
+ *      - int updates_count: Number of activities updated in this batch.
  *      - int categoryid: Category the operation was launched on (0 if unknown).
  *      - int coursecount: Number of distinct courses affected.
  * }
@@ -43,7 +43,7 @@ class dates_updated extends \core\event\base {
     protected function init() {
         $this->data['crud'] = 'u';
         $this->data['edulevel'] = self::LEVEL_OTHER;
-        // No objecttable: the event represents a batch spanning many quizzes.
+        // No objecttable: The event represents a batch spanning many activities.
     }
 
     /**
@@ -64,7 +64,7 @@ class dates_updated extends \core\event\base {
         $count = isset($this->other['updates_count']) ? (int)$this->other['updates_count'] : 0;
         $courses = isset($this->other['coursecount']) ? (int)$this->other['coursecount'] : 0;
         $batch = isset($this->other['batch_id']) ? $this->other['batch_id'] : '';
-        return "The user with id '{$this->userid}' bulk-updated exam dates for {$count} quizzes " .
+        return "The user with id '{$this->userid}' bulk-updated assessment dates for {$count} activities " .
             "across {$courses} courses (batch '{$batch}').";
     }
 

@@ -30,13 +30,13 @@ global $CFG;
 require_once($CFG->libdir . '/formslib.php');
 
 /**
- * Category/test-type/date selection form, used by both index.php (full
+ * Category/activity-type/date selection form, used by both index.php (full
  * category picker) and preview.php (category fixed via customdata).
  */
 class examdates_form extends \moodleform {
     /**
      * Build the category picker (or static display, if fixed), the three
-     * quiz-type blocks (exam/resit1/resit2) and the preview submit button.
+     * exam/resit blocks with optional Quiz and Assignment targets and the preview submit button.
      */
     public function definition() {
         $mform = $this->_form;
@@ -94,9 +94,9 @@ class examdates_form extends \moodleform {
         $mform->setDefault('include_sub', 1);
 
         // Build the three identical blocks.
-        $this->add_quiz_block($mform, 'exam', 1);
-        $this->add_quiz_block($mform, 'resit1', 0);
-        $this->add_quiz_block($mform, 'resit2', 0);
+        $this->add_activity_block($mform, 'exam', 1);
+        $this->add_activity_block($mform, 'resit1', 0);
+        $this->add_activity_block($mform, 'resit2', 0);
 
         // Submit button, rendered as a standard always-visible action bar
         // (no separate collapsible "Actions" header, no cancel button here).
@@ -104,13 +104,13 @@ class examdates_form extends \moodleform {
     }
 
     /**
-     * Add a checkbox + idnumber + open/close block for one quiz type.
+     * Add a checkbox + Quiz/Assignment idnumbers + open/close block for one assessment type.
      *
      * @param \MoodleQuickForm $mform
      * @param string $type exam|resit1|resit2
      * @param int $defaultchecked
      */
-    private function add_quiz_block($mform, $type, $defaultchecked) {
+    private function add_activity_block($mform, $type, $defaultchecked) {
         $mform->addElement('header', $type . 'header', get_string($type, 'local_examdates'));
 
         $mform->addElement(
@@ -121,11 +121,21 @@ class examdates_form extends \moodleform {
         $mform->setType('update_' . $type, PARAM_INT);
         $mform->setDefault('update_' . $type, $defaultchecked);
 
-        $mform->addElement('text', $type . '_idnumber', get_string('idnumber', 'local_examdates'));
+        $mform->addElement('text', $type . '_idnumber', get_string('quiz_idnumber', 'local_examdates'));
         $mform->setType($type . '_idnumber', PARAM_ALPHANUMEXT);
         $mform->setDefault($type . '_idnumber', $type);
-        $mform->addHelpButton($type . '_idnumber', 'idnumber', 'local_examdates');
+        $mform->addHelpButton($type . '_idnumber', 'quiz_idnumber', 'local_examdates');
         $mform->disabledIf($type . '_idnumber', 'update_' . $type, 'notchecked');
+
+        $mform->addElement(
+            'text',
+            $type . '_assign_idnumber',
+            get_string('assign_idnumber', 'local_examdates')
+        );
+        $mform->setType($type . '_assign_idnumber', PARAM_ALPHANUMEXT);
+        $mform->setDefault($type . '_assign_idnumber', '');
+        $mform->addHelpButton($type . '_assign_idnumber', 'assign_idnumber', 'local_examdates');
+        $mform->disabledIf($type . '_assign_idnumber', 'update_' . $type, 'notchecked');
 
         $mform->addElement(
             'date_time_selector',
@@ -165,8 +175,8 @@ class examdates_form extends \moodleform {
     }
 
     /**
-     * Server-side validation: at least one quiz type must be selected, each
-     * selected type needs an idnumber, and close must be after open.
+     * Server-side validation: at least one assessment type must be selected, each
+     * selected type needs at least one activity idnumber, and close must be after open.
      *
      * @param array $data Submitted form data
      * @param array $files Submitted files (unused)
@@ -184,8 +194,10 @@ class examdates_form extends \moodleform {
                 continue;
             }
 
-            if (empty(trim($data[$type . '_idnumber']))) {
-                $errors[$type . '_idnumber'] = get_string('idnumber_required', 'local_examdates');
+            $quizidnumber = trim($data[$type . '_idnumber'] ?? '');
+            $assignidnumber = trim($data[$type . '_assign_idnumber'] ?? '');
+            if ($quizidnumber === '' && $assignidnumber === '') {
+                $errors[$type . '_idnumber'] = get_string('activity_idnumber_required', 'local_examdates');
             }
 
             if ($data[$type . 'close'] <= $data[$type . 'open']) {

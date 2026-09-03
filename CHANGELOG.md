@@ -2,6 +2,29 @@
 
 All notable changes to this plugin are documented in this file.
 
+## [1.5.0] - 2026-09-03
+
+### Added
+- Added first-class `mod_assign` support alongside `mod_quiz`. Each exam/resit
+  period now accepts an optional Assignment course-module ID number, so a
+  period can update a Test, an Assignment, or both.
+- Assignment dates map to `allowsubmissionsfromdate` and `duedate`. Enabled
+  `cutoffdate` and `gradingduedate` values that would become earlier than the
+  new due date are advanced to the new due date.
+- Preview statistics and rows now distinguish Tests and Assignments.
+- Change history, CSV export, privacy metadata, rollback and calendar-event
+  synchronisation now support both activity types. Assignment-specific
+  secondary date values are stored in the audit log for exact rollback.
+- Added Assignment ID-number options to the CLI.
+
+### Changed
+- Generalised batched activity preloading so both Quiz and Assignment lookups
+  stay N+1-safe. Existing Quiz ID-number defaults remain unchanged and new
+  Assignment ID-number fields default to blank for backward compatibility.
+- Extended the audit-log schema with module type, instance ID, activity name
+  and module-specific rollback data. Existing Quiz log rows are migrated
+  during upgrade.
+
 ## [1.4.4] - 2026-09-03
 
 ### Fixed

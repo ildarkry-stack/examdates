@@ -70,6 +70,10 @@ if ($action === 'apply') {
     $preparedata->resit1_idnumber = optional_param('resit1_idnumber', 'resit1', PARAM_ALPHANUMEXT);
     $preparedata->resit2_idnumber = optional_param('resit2_idnumber', 'resit2', PARAM_ALPHANUMEXT);
 
+    $preparedata->exam_assign_idnumber = optional_param('exam_assign_idnumber', '', PARAM_ALPHANUMEXT);
+    $preparedata->resit1_assign_idnumber = optional_param('resit1_assign_idnumber', '', PARAM_ALPHANUMEXT);
+    $preparedata->resit2_assign_idnumber = optional_param('resit2_assign_idnumber', '', PARAM_ALPHANUMEXT);
+
     foreach (['exam', 'resit1', 'resit2'] as $type) {
         if (!empty($preparedata->{'update_' . $type})) {
             $preparedata->{$type . 'open'}  = optional_param($type . 'open', 0, PARAM_INT);
@@ -96,10 +100,19 @@ if ($action === 'apply') {
     }
 
     foreach (['exam', 'resit1', 'resit2'] as $type) {
+        if (empty($preparedata->{'update_' . $type})) {
+            continue;
+        }
+
         if (
-            !empty($preparedata->{'update_' . $type})
-                && $preparedata->{$type . 'close'} <= $preparedata->{$type . 'open'}
+            trim($preparedata->{$type . '_idnumber'}) === ''
+                && trim($preparedata->{$type . '_assign_idnumber'}) === ''
         ) {
+            $errors[] = get_string('activity_idnumber_required', 'local_examdates')
+                . ' (' . get_string($type, 'local_examdates') . ')';
+        }
+
+        if ($preparedata->{$type . 'close'} <= $preparedata->{$type . 'open'}) {
             $errors[] = get_string('invalid_dates', 'local_examdates')
                 . ' (' . get_string($type, 'local_examdates') . ')';
         }
@@ -190,7 +203,9 @@ if ($data = $mform->get_data()) {
 
     foreach (['exam', 'resit1', 'resit2'] as $type) {
         $idfield = $type . '_idnumber';
-        $preparedata->{$idfield} = !empty($data->{$idfield}) ? trim($data->{$idfield}) : $type;
+        $assignidfield = $type . '_assign_idnumber';
+        $preparedata->{$idfield} = isset($data->{$idfield}) ? trim($data->{$idfield}) : $type;
+        $preparedata->{$assignidfield} = isset($data->{$assignidfield}) ? trim($data->{$assignidfield}) : '';
 
         if (!empty($data->{'update_' . $type})) {
             $preparedata->{$type . 'open'}  = $data->{$type . 'open'};
@@ -245,7 +260,9 @@ if ($preparedata) {
 
     echo $OUTPUT->notification(
         get_string('preview_page_stats_message', 'local_examdates', (object)[
-            'tests'   => $stats['total_updates'],
+            'items' => $stats['total_updates'],
+            'quizzes' => $stats['quiz_updates'],
+            'assignments' => $stats['assign_updates'],
             'courses' => $stats['courses_with_changes'],
             'errors'  => $stats['total_errors'],
             'shown'   => count($courses),
@@ -280,7 +297,7 @@ if ($preparedata) {
         $confirmtext = $totalcourses > $perpage
             ? get_string('confirm_apply_text_paged', 'local_examdates', (object)['total' => $totalcourses])
             : get_string('confirm_apply_text', 'local_examdates', (object)[
-                'tests' => $stats['total_updates'],
+                'items' => $stats['total_updates'],
                 'courses' => $stats['courses_with_changes'],
             ]);
 

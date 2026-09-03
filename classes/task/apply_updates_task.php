@@ -15,7 +15,7 @@
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
 /**
- * Adhoc task that applies a confirmed bulk exam-date change.
+ * Adhoc task that applies a confirmed bulk assessment-date change.
  *
  * @package    local_examdates
  * @copyright  2026 Ильдар
@@ -106,7 +106,7 @@ class apply_updates_task extends \core\task\adhoc_task {
         );
 
         $message = get_string('changes_applied_detailed', 'local_examdates', (object)[
-            'tests'   => $updatedcount,
+            'items' => $updatedcount,
             'courses' => $changedcoursecount,
         ]);
 

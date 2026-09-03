@@ -27,7 +27,7 @@ namespace local_examdates;
 /**
  * Manager class for local_examdates plugin.
  *
- * Handles bulk-updating quiz exam/resit dates for a course category, previewing
+ * Handles bulk-updating Quiz and Assignment exam/resit dates for a course category, previewing
  * changes before they're applied, logging changes and rolling them back.
  */
 class manager {
@@ -181,18 +181,68 @@ class manager {
     }
 
     /**
-     * Preload matching quizzes for multiple courses and idnumbers.
+     * Resolve configured Quiz and Assignment targets for each assessment period.
      *
-     * This intentionally performs a small number of batched database reads
-     * before any course/type iteration. It avoids the N+1 query pattern which would
-     * otherwise execute one or more SELECTs for every course and quiz type.
+     * The legacy quiz idnumber field remains the default target so existing
+     * installations keep exactly the same behaviour after upgrading. Assignment
+     * targets are opt-in: an empty assignment idnumber means "do not touch
+     * assignments" for that period.
+     *
+     * @param object|null $data Prepared form/task data
+     * @param bool $selectedonly Only return periods whose update checkbox is enabled
+     * @return array Targets keyed by assessment type, then module name
+     */
+    private function get_activity_targets($data = null, $selectedonly = false) {
+        $targets = [];
+
+        foreach (['exam', 'resit1', 'resit2'] as $type) {
+            if ($selectedonly && ($data === null || empty($data->{'update_' . $type}))) {
+                continue;
+            }
+
+            $quizfield = $type . '_idnumber';
+            $assignfield = $type . '_assign_idnumber';
+
+            $quizidnumber = $type;
+            if ($data !== null && property_exists($data, $quizfield)) {
+                $quizidnumber = trim((string)$data->{$quizfield});
+            }
+
+            $assignidnumber = '';
+            if ($data !== null && property_exists($data, $assignfield)) {
+                $assignidnumber = trim((string)$data->{$assignfield});
+            }
+
+            $targets[$type] = [];
+            if ($quizidnumber !== '') {
+                $targets[$type]['quiz'] = $quizidnumber;
+            }
+            if ($assignidnumber !== '') {
+                $targets[$type]['assign'] = $assignidnumber;
+            }
+        }
+
+        return $targets;
+    }
+
+    /**
+     * Preload matching activity instances for multiple courses and idnumbers.
+     *
+     * This keeps database reads outside the course/type loops and therefore
+     * preserves the N+1 fix when Assignment support is enabled.
      *
      * @param array $courses List of course records
-     * @param array $idnumbers Quiz course-module idnumbers to find
-     * @return array Matching quiz records indexed by [courseid][idnumber]
+     * @param array $idnumbers Course-module idnumbers to find
+     * @param string $modulename Supported module name: quiz or assign
+     * @return array Matches indexed by [courseid][idnumber]
      */
-    private function preload_quizzes($courses, $idnumbers) {
+    private function preload_module_instances($courses, $idnumbers, $modulename) {
         global $DB;
+
+        $supportedmodules = ['quiz' => 'quiz', 'assign' => 'assign'];
+        if (!isset($supportedmodules[$modulename])) {
+            throw new \coding_exception('Unsupported activity module: ' . $modulename);
+        }
 
         if (empty($courses) || empty($idnumbers)) {
             return [];
@@ -207,8 +257,9 @@ class manager {
 
         $wantedidnumbers = [];
         foreach ($idnumbers as $idnumber) {
-            if (!empty($idnumber)) {
-                $wantedidnumbers[(string)$idnumber] = (string)$idnumber;
+            $idnumber = trim((string)$idnumber);
+            if ($idnumber !== '') {
+                $wantedidnumbers[$idnumber] = $idnumber;
             }
         }
 
@@ -223,10 +274,10 @@ class manager {
         );
 
         $result = [];
+        $table = $supportedmodules[$modulename];
 
         // Keep each IN clause comfortably below database parameter limits.
-        // This still scales by batches rather than by individual courses.
-        foreach (array_chunk(array_values($courseids), 500) as $coursechunk) {
+        foreach (array_chunk(array_values($courseids), self::PROCESS_BATCH_SIZE) as $coursechunk) {
             [$courseinsql, $courseparams] = $DB->get_in_or_equal(
                 $coursechunk,
                 SQL_PARAMS_NAMED,
@@ -234,35 +285,37 @@ class manager {
             );
 
             $sql = "SELECT cm.id AS examdatescmid,
-                           q.*,
+                           a.*,
                            cm.course AS examdatescourseid,
                            cm.idnumber AS examdatesidnumber
                       FROM {course_modules} cm
                       JOIN {modules} m ON m.id = cm.module
-                      JOIN {quiz} q ON q.id = cm.instance
+                      JOIN {{$table}} a ON a.id = cm.instance
                      WHERE cm.course $courseinsql
                        AND cm.idnumber $idnumberinsql
                        AND m.name = :modulename
                        AND cm.deletioninprogress = 0
                   ORDER BY cm.id ASC";
 
-            $params = array_merge($courseparams, $idnumberparams, ['modulename' => 'quiz']);
+            $params = array_merge($courseparams, $idnumberparams, ['modulename' => $modulename]);
             $records = $DB->get_records_sql($sql, $params);
 
             foreach ($records as $record) {
                 $courseid = (int)$record->examdatescourseid;
                 $idnumber = (string)$record->examdatesidnumber;
+                $cmid = (int)$record->examdatescmid;
 
-                // Match the former single-record lookup behaviour for duplicate
-                // idnumbers by keeping the first course module found.
+                // Keep the first module if a course contains duplicate idnumbers,
+                // matching the behaviour of the previous single-record lookup.
                 if (isset($result[$courseid][$idnumber])) {
                     continue;
                 }
 
-                // Strip helper aliases so the object remains a clean {quiz}
-                // record and can safely be passed to update_record() and Quiz APIs.
                 unset($record->examdatescmid, $record->examdatescourseid, $record->examdatesidnumber);
-                $result[$courseid][$idnumber] = $record;
+                $result[$courseid][$idnumber] = [
+                    'instance' => $record,
+                    'cmid' => $cmid,
+                ];
             }
         }
 
@@ -270,38 +323,85 @@ class manager {
     }
 
     /**
-     * Get current dates for preview.
+     * Preload every selected activity module required by the current operation.
      *
      * @param array $courses List of course records
-     * @param object|null $idnumbers ID numbers for each quiz type
+     * @param array $targets Targets from get_activity_targets()
+     * @return array Matches keyed by module name
+     */
+    private function preload_activities($courses, $targets) {
+        $idnumbers = ['quiz' => [], 'assign' => []];
+        foreach ($targets as $moduletargets) {
+            foreach ($moduletargets as $modulename => $idnumber) {
+                $idnumbers[$modulename][$idnumber] = $idnumber;
+            }
+        }
+
+        return [
+            'quiz' => $this->preload_module_instances($courses, array_values($idnumbers['quiz']), 'quiz'),
+            'assign' => $this->preload_module_instances($courses, array_values($idnumbers['assign']), 'assign'),
+        ];
+    }
+
+    /**
+     * Read the open/close pair represented by a supported activity module.
+     *
+     * For Assignment, the plugin treats "Allow submissions from" as open and
+     * "Due date" as close. Cut-off and grading due dates are not used as the
+     * displayed range.
+     *
+     * @param string $modulename quiz|assign
+     * @param \stdClass $instance Activity record
+     * @return array [open, close]
+     */
+    private function get_activity_dates($modulename, $instance) {
+        if ($modulename === 'assign') {
+            return [(int)$instance->allowsubmissionsfromdate, (int)$instance->duedate];
+        }
+
+        return [(int)$instance->timeopen, (int)$instance->timeclose];
+    }
+
+    /**
+     * Get current Quiz and Assignment dates for preview.
+     *
+     * @param array $courses List of course records
+     * @param object|null $idnumbers Prepared idnumber data
+     * @param bool $selectedonly Only load periods selected for updating
      * @return array Current dates data keyed by courseid
      */
-    public function get_current_dates($courses, $idnumbers = null) {
-        $examid   = isset($idnumbers->exam_idnumber) ? $idnumbers->exam_idnumber : 'exam';
-        $resit1id = isset($idnumbers->resit1_idnumber) ? $idnumbers->resit1_idnumber : 'resit1';
-        $resit2id = isset($idnumbers->resit2_idnumber) ? $idnumbers->resit2_idnumber : 'resit2';
-
-        $types = ['exam' => $examid, 'resit1' => $resit1id, 'resit2' => $resit2id];
-
-        $quizzes = $this->preload_quizzes($courses, array_values($types));
+    public function get_current_dates($courses, $idnumbers = null, $selectedonly = false) {
+        $targets = $this->get_activity_targets($idnumbers, $selectedonly);
+        $activities = $this->preload_activities($courses, $targets);
 
         $result = [];
         foreach ($courses as $course) {
             $result[$course->id] = ['fullname' => $course->fullname];
 
-            foreach ($types as $type => $idnumber) {
-                $quiz = $quizzes[$course->id][$idnumber] ?? null;
+            foreach ($targets as $type => $moduletargets) {
+                $result[$course->id][$type] = [];
+                foreach ($moduletargets as $modulename => $idnumber) {
+                    $match = $activities[$modulename][$course->id][$idnumber] ?? null;
+                    if (!$match) {
+                        $result[$course->id][$type][$modulename] = [
+                            'exists' => false,
+                            'idnumber' => $idnumber,
+                            'modulename' => $modulename,
+                        ];
+                        continue;
+                    }
 
-                if ($quiz) {
-                    $result[$course->id][$type] = [
-                        'timeopen'  => $quiz->timeopen,
-                        'timeclose' => $quiz->timeclose,
-                        'quizid'    => $quiz->id,
-                        'quizname'  => $quiz->name,
-                        'exists'    => true,
+                    $instance = $match['instance'];
+                    [$timeopen, $timeclose] = $this->get_activity_dates($modulename, $instance);
+                    $result[$course->id][$type][$modulename] = [
+                        'exists' => true,
+                        'idnumber' => $idnumber,
+                        'modulename' => $modulename,
+                        'instanceid' => $instance->id,
+                        'activityname' => $instance->name,
+                        'timeopen' => $timeopen,
+                        'timeclose' => $timeclose,
                     ];
-                } else {
-                    $result[$course->id][$type] = ['exists' => false];
                 }
             }
         }
@@ -310,68 +410,81 @@ class manager {
     }
 
     /**
-     * Build preview data with statistics.
+     * Build preview data with statistics for Quiz and Assignment activities.
      *
      * @param array $courses List of course records
      * @param object $newdates New dates data
      * @return array ['preview' => ..., 'stats' => ...]
      */
     public function get_preview_data($courses, $newdates) {
-        $current = $this->get_current_dates($courses, $newdates);
+        $current = $this->get_current_dates($courses, $newdates, true);
+        $targets = $this->get_activity_targets($newdates, true);
 
         $preview = [];
         $stats = [
-            'total_courses'        => count($courses),
+            'total_courses' => count($courses),
             'courses_with_changes' => 0,
-            'total_updates'        => 0,
-            'total_errors'         => 0,
-            'exam_updates'         => 0,
-            'resit1_updates'       => 0,
-            'resit2_updates'       => 0,
-            'exam_missing'         => 0,
-            'resit1_missing'       => 0,
-            'resit2_missing'       => 0,
+            'total_updates' => 0,
+            'total_errors' => 0,
+            'quiz_updates' => 0,
+            'assign_updates' => 0,
+            'quiz_missing' => 0,
+            'assign_missing' => 0,
+            'exam_updates' => 0,
+            'resit1_updates' => 0,
+            'resit2_updates' => 0,
         ];
-
-        $types = ['exam', 'resit1', 'resit2'];
 
         foreach ($current as $courseid => $data) {
             $coursepreview = ['fullname' => $data['fullname'], 'has_changes' => false];
 
-            foreach ($types as $type) {
-                if (empty($newdates->{'update_' . $type})) {
-                    continue;
-                }
-
-                if (!$data[$type]['exists']) {
-                    $coursepreview[$type] = ['status' => 'missing'];
-                    $stats[$type . '_missing']++;
-                    $stats['total_errors']++;
-                    continue;
-                }
-
-                $oldopen  = $data[$type]['timeopen'];
-                $oldclose = $data[$type]['timeclose'];
-                $newopen  = $newdates->{$type . 'open'};
-                $newclose = $newdates->{$type . 'close'};
-
-                if ($oldopen != $newopen || $oldclose != $newclose) {
-                    $coursepreview[$type] = [
-                        'status'    => 'will_change',
-                        'old_open'  => $oldopen,
-                        'old_close' => $oldclose,
-                        'new_open'  => $newopen,
-                        'new_close' => $newclose,
+            foreach ($targets as $type => $moduletargets) {
+                $coursepreview[$type] = [];
+                foreach ($moduletargets as $modulename => $idnumber) {
+                    $activity = $data[$type][$modulename] ?? [
+                        'exists' => false,
+                        'idnumber' => $idnumber,
+                        'modulename' => $modulename,
                     ];
-                    $coursepreview['has_changes'] = true;
-                    $stats[$type . '_updates']++;
-                    $stats['total_updates']++;
-                } else {
-                    $coursepreview[$type] = [
-                        'status'    => 'no_change',
-                        'old_open'  => $oldopen,
-                        'old_close' => $oldclose,
-                    ];
+
+                    if (empty($activity['exists'])) {
+                        $coursepreview[$type][$modulename] = [
+                            'status' => 'missing',
+                            'idnumber' => $idnumber,
+                        ];
+                        $stats[$modulename . '_missing']++;
+                        $stats['total_errors']++;
+                        continue;
+                    }
+
+                    $oldopen = $activity['timeopen'];
+                    $oldclose = $activity['timeclose'];
+                    $newopen = (int)$newdates->{$type . 'open'};
+                    $newclose = (int)$newdates->{$type . 'close'};
+
+                    if ($oldopen != $newopen || $oldclose != $newclose) {
+                        $coursepreview[$type][$modulename] = [
+                            'status' => 'will_change',
+                            'activityname' => $activity['activityname'],
+                            'idnumber' => $idnumber,
+                            'old_open' => $oldopen,
+                            'old_close' => $oldclose,
+                            'new_open' => $newopen,
+                            'new_close' => $newclose,
+                        ];
+                        $coursepreview['has_changes'] = true;
+                        $stats[$modulename . '_updates']++;
+                        $stats[$type . '_updates']++;
+                        $stats['total_updates']++;
+                    } else {
+                        $coursepreview[$type][$modulename] = [
+                            'status' => 'no_change',
+                            'activityname' => $activity['activityname'],
+                            'idnumber' => $idnumber,
+                            'old_open' => $oldopen,
+                            'old_close' => $oldclose,
+                        ];
+                    }
                 }
             }
 
@@ -398,10 +511,11 @@ class manager {
         $summary = \html_writer::start_div('alert alert-info mb-3');
         $summary .= \html_writer::tag('strong', get_string('preview_stats', 'local_examdates'));
         $summary .= \html_writer::empty_tag('br');
-        $summary .= get_string('found_quizzes', 'local_examdates') . ': '
-            . ($stats['exam_updates'] + $stats['resit1_updates'] + $stats['resit2_updates']);
-        $summary .= \html_writer::empty_tag('br');
-        $summary .= get_string('errors', 'local_examdates') . ': ' . $stats['total_errors'];
+        $summary .= get_string('preview_activity_summary', 'local_examdates', (object)[
+            'quizzes' => $stats['quiz_updates'],
+            'assignments' => $stats['assign_updates'],
+            'errors' => $stats['total_errors'],
+        ]);
         $summary .= \html_writer::end_div();
 
         $table = new \html_table();
@@ -414,7 +528,6 @@ class manager {
         $table->data = [];
 
         foreach ($preview as $courseid => $data) {
-            // Course name links to the course (opens in a new tab).
             $courseurl = new \moodle_url('/course/view.php', ['id' => $courseid]);
             $row = [\html_writer::link(
                 $courseurl,
@@ -423,7 +536,7 @@ class manager {
             )];
 
             foreach (['exam', 'resit1', 'resit2'] as $type) {
-                $row[] = $this->render_preview_cell(isset($data[$type]) ? $data[$type] : null);
+                $row[] = $this->render_assessment_preview_cell($data[$type] ?? null);
             }
             $table->data[] = $row;
         }
@@ -432,7 +545,36 @@ class manager {
     }
 
     /**
-     * Render a single preview cell.
+     * Render the Quiz/Assignment rows within one assessment-period cell.
+     *
+     * @param array|null $activities Preview cells keyed by module name
+     * @return string HTML
+     */
+    private function render_assessment_preview_cell($activities) {
+        if (empty($activities)) {
+            return \html_writer::tag(
+                'span',
+                '— ' . get_string('not_selected', 'local_examdates') . ' —',
+                ['class' => 'text-muted']
+            );
+        }
+
+        $parts = [];
+        foreach (['quiz', 'assign'] as $modulename) {
+            if (!isset($activities[$modulename])) {
+                continue;
+            }
+
+            $labelkey = $modulename === 'quiz' ? 'quiz' : 'assignment';
+            $parts[] = \html_writer::tag('strong', get_string($labelkey, 'local_examdates'))
+                . ': ' . $this->render_preview_cell($activities[$modulename]);
+        }
+
+        return implode(\html_writer::empty_tag('br'), $parts);
+    }
+
+    /**
+     * Render a single activity preview cell.
      *
      * @param array|null $cell
      * @return string HTML
@@ -446,11 +588,16 @@ class manager {
             );
         }
         if ($cell['status'] === 'missing') {
-            return \html_writer::tag('span', get_string('notfound', 'local_examdates'), ['class' => 'text-danger']);
+            $label = get_string('notfound', 'local_examdates') . ' (' . s($cell['idnumber']) . ')';
+            return \html_writer::tag('span', $label, ['class' => 'text-danger']);
         }
+
+        $name = format_string($cell['activityname']) . ' (' . s($cell['idnumber']) . ')';
+        $name = \html_writer::tag('small', $name, ['class' => 'd-block mb-1']);
+
         if ($cell['status'] === 'no_change') {
             $old = $this->format_date_range($cell['old_open'], $cell['old_close']);
-            return \html_writer::tag(
+            return $name . \html_writer::tag(
                 'span',
                 $old . ' ' . \html_writer::tag('small', '(' . get_string('nochanges', 'local_examdates') . ')'),
                 ['class' => 'text-muted']
@@ -459,7 +606,7 @@ class manager {
         if ($cell['status'] === 'will_change') {
             $old = $this->format_date_range($cell['old_open'], $cell['old_close']);
             $new = $this->format_date_range($cell['new_open'], $cell['new_close']);
-            return \html_writer::tag('span', $old, ['class' => 'text-warning'])
+            return $name . \html_writer::tag('span', $old, ['class' => 'text-warning'])
                 . \html_writer::empty_tag('br')
                 . get_string('arrow', 'local_examdates')
                 . \html_writer::empty_tag('br')
@@ -469,7 +616,7 @@ class manager {
     }
 
     /**
-     * Apply date updates to all matching quizzes.
+     * Apply date updates to all matching Quiz and Assignment activities.
      *
      * @param array $courses List of course records
      * @param object $newdates Prepared data
@@ -482,44 +629,36 @@ class manager {
         global $DB, $CFG;
 
         require_once($CFG->dirroot . '/mod/quiz/locallib.php');
+        require_once($CFG->dirroot . '/mod/assign/lib.php');
+        require_once($CFG->dirroot . '/mod/assign/locallib.php');
 
-        // One id may be shared across multiple bounded processing batches.
-        // random_string() stays short enough that the 'rollback_' prefix still
-        // fits the char(40) batch_id column.
         if ($batchid === null) {
             $batchid = $this->create_batch_id();
         }
         $result = ['updated' => [], 'errors' => [], 'skipped' => []];
 
-        // Resolve which quiz types are being updated.
-        $updatetypes = [];
-        foreach (['exam', 'resit1', 'resit2'] as $type) {
-            if (!empty($newdates->{'update_' . $type})) {
-                $updatetypes[$type] = !empty($newdates->{$type . '_idnumber'})
-                    ? $newdates->{$type . '_idnumber'}
-                    : $type;
+        $targets = $this->get_activity_targets($newdates, true);
+        foreach ($targets as $type => $moduletargets) {
+            if (empty($moduletargets)) {
+                unset($targets[$type]);
+                $result['errors'][] = get_string('activity_idnumber_required', 'local_examdates')
+                    . ' (' . get_string($type, 'local_examdates') . ')';
+                continue;
+            }
 
-                // Server-side re-validation (the public form is bypassed by the confirm form).
-                $open  = $newdates->{$type . 'open'};
-                $close = $newdates->{$type . 'close'};
-                if ($close <= $open) {
-                    // Drop this type entirely; record one clear error.
-                    unset($updatetypes[$type]);
-                    $result['errors'][] = get_string('invalid_dates', 'local_examdates')
-                        . ' (' . get_string($type, 'local_examdates') . ')';
-                }
+            $open = (int)$newdates->{$type . 'open'};
+            $close = (int)$newdates->{$type . 'close'};
+            if ($close <= $open) {
+                unset($targets[$type]);
+                $result['errors'][] = get_string('invalid_dates', 'local_examdates')
+                    . ' (' . get_string($type, 'local_examdates') . ')';
             }
         }
 
-        // Preload all quizzes that can be touched by this batch before entering
-        // the update loops. Reads are performed per batch rather than per
-        // course × selected quiz type.
-        $quizzes = $this->preload_quizzes($courses, array_values($updatetypes));
+        $activities = $this->preload_activities($courses, $targets);
 
-        // Get courses by category normally supplies the category already. Keep
-        // apply_updates() robust for callers which pass reduced course records,
-        // but batch-load any missing categories rather than calling get_course()
-        // once per iteration.
+        // get_courses_by_category() normally supplies category. Batch-load any
+        // missing values rather than introducing per-course database reads.
         $coursecategories = [];
         $missingcategorycourseids = [];
         foreach ($courses as $course) {
@@ -542,13 +681,36 @@ class manager {
             }
         }
 
+        // Assignment calendar synchronisation needs full course and cm records.
+        // Load them once for the whole processing batch, not from inside loops.
+        $fullcourses = [];
+        $assignmentcms = [];
+        if (!empty($activities['assign'])) {
+            $assignmentcourseids = [];
+            $assignmentcmids = [];
+            foreach ($activities['assign'] as $courseid => $matches) {
+                $assignmentcourseids[$courseid] = $courseid;
+                foreach ($matches as $match) {
+                    $assignmentcmids[$match['cmid']] = $match['cmid'];
+                }
+            }
+            if ($assignmentcourseids) {
+                $fullcourses = $DB->get_records_list('course', 'id', array_values($assignmentcourseids));
+            }
+            if ($assignmentcmids) {
+                foreach (array_chunk(array_values($assignmentcmids), self::PROCESS_BATCH_SIZE) as $cmchunk) {
+                    $assignmentcms += $DB->get_records_list('course_modules', 'id', $cmchunk);
+                }
+            }
+        }
+
         foreach ($courses as $course) {
-            // Defence in depth: re-check capability for this course's category.
             if (!isset($coursecategories[(int)$course->id])) {
                 $result['errors'][] = get_string('error_coursedeleted', 'local_examdates')
                     . ': ' . format_string($course->fullname);
                 continue;
             }
+
             $categoryid = $coursecategories[(int)$course->id];
             try {
                 $this->require_category_capability($categoryid, 'local/examdates:manage', $userid);
@@ -560,71 +722,110 @@ class manager {
 
             $coursechanged = false;
 
-            foreach ($updatetypes as $type => $idnumber) {
-                $quiz = $quizzes[$course->id][$idnumber] ?? null;
-                if (!$quiz) {
-                    $result['errors'][] = get_string('missing_idnumber', 'local_examdates', (object)[
-                        'coursename' => format_string($course->fullname),
-                        'idnumber'   => s($idnumber),
-                    ]);
-                    continue;
-                }
+            foreach ($targets as $type => $moduletargets) {
+                foreach ($moduletargets as $modulename => $idnumber) {
+                    $match = $activities[$modulename][$course->id][$idnumber] ?? null;
+                    if (!$match) {
+                        $result['errors'][] = get_string('missing_activity_idnumber', 'local_examdates', (object)[
+                            'coursename' => format_string($course->fullname),
+                            'activity' => get_string($modulename === 'quiz' ? 'quiz' : 'assignment', 'local_examdates'),
+                            'idnumber' => s($idnumber),
+                        ]);
+                        continue;
+                    }
 
-                $oldopen  = $quiz->timeopen;
-                $oldclose = $quiz->timeclose;
-                $newopen  = $newdates->{$type . 'open'};
-                $newclose = $newdates->{$type . 'close'};
+                    $instance = $match['instance'];
+                    [$oldopen, $oldclose] = $this->get_activity_dates($modulename, $instance);
+                    $newopen = (int)$newdates->{$type . 'open'};
+                    $newclose = (int)$newdates->{$type . 'close'};
+                    $extra = [];
 
-                if ($oldopen == $newopen && $oldclose == $newclose) {
-                    $result['skipped'][] = [
+                    if ($modulename === 'assign') {
+                        $oldextra = [
+                            'cutoffdate' => (int)$instance->cutoffdate,
+                            'gradingduedate' => (int)$instance->gradingduedate,
+                        ];
+                        $newextra = $oldextra;
+
+                        // Keep enabled secondary dates valid if the due date moves
+                        // beyond them, but do not enable a disabled date or shorten
+                        // an existing late-submission/grading window.
+                        if ($oldclose != $newclose) {
+                            if ($newextra['cutoffdate'] > 0 && $newextra['cutoffdate'] < $newclose) {
+                                $newextra['cutoffdate'] = $newclose;
+                            }
+                            if ($newextra['gradingduedate'] > 0 && $newextra['gradingduedate'] < $newclose) {
+                                $newextra['gradingduedate'] = $newclose;
+                            }
+                        }
+                        $extra = ['old' => $oldextra, 'new' => $newextra];
+                    }
+
+                    $extrachanged = !empty($extra) && $extra['old'] !== $extra['new'];
+                    if ($oldopen == $newopen && $oldclose == $newclose && !$extrachanged) {
+                        $result['skipped'][] = [
+                            'courseid' => $course->id,
+                            'coursename' => $course->fullname,
+                            'activityname' => $instance->name,
+                            'modulename' => $modulename,
+                            'activitytype' => $type,
+                        ];
+                        continue;
+                    }
+
+                    if ($modulename === 'assign') {
+                        $instance->allowsubmissionsfromdate = $newopen;
+                        $instance->duedate = $newclose;
+                        $instance->cutoffdate = $extra['new']['cutoffdate'];
+                        $instance->gradingduedate = $extra['new']['gradingduedate'];
+                    } else {
+                        $instance->timeopen = $newopen;
+                        $instance->timeclose = $newclose;
+                    }
+                    $instance->timemodified = time();
+                    $DB->update_record($modulename, $instance);
+
+                    $this->update_activity_calendar(
+                        $modulename,
+                        $instance,
+                        $match['cmid'],
+                        $fullcourses[$course->id] ?? null,
+                        $assignmentcms[$match['cmid']] ?? null
+                    );
+
+                    $this->log_change(
+                        $course,
+                        $modulename,
+                        $instance,
+                        $idnumber,
+                        $oldopen,
+                        $oldclose,
+                        $newopen,
+                        $newclose,
+                        $userid,
+                        $batchid,
+                        $extra
+                    );
+
+                    $coursechanged = true;
+                    $result['updated'][] = [
+                        'courseid' => $course->id,
                         'coursename' => $course->fullname,
-                        'quizname'   => $quiz->name,
-                        'quiztype'   => $type,
+                        'activityid' => $instance->id,
+                        'activityname' => $instance->name,
+                        'modulename' => $modulename,
+                        'activitytype' => $type,
+                        'idnumber' => $idnumber,
+                        'old_timeopen_raw' => $oldopen,
+                        'old_timeclose_raw' => $oldclose,
+                        'new_timeopen_raw' => $newopen,
+                        'new_timeclose_raw' => $newclose,
+                        'old_dates' => $this->format_date_range($oldopen, $oldclose),
+                        'new_dates' => $this->format_date_range($newopen, $newclose),
                     ];
-                    continue;
                 }
-
-                $quiz->timeopen = $newopen;
-                $quiz->timeclose = $newclose;
-                $quiz->timemodified = time();
-                $DB->update_record('quiz', $quiz);
-
-                // Keep calendar events in sync (raw DB update alone leaves them stale).
-                if (function_exists('quiz_update_events')) {
-                    quiz_update_events($quiz);
-                }
-
-                $this->log_change(
-                    $course,
-                    $quiz,
-                    $idnumber,
-                    $oldopen,
-                    $oldclose,
-                    $newopen,
-                    $newclose,
-                    $userid,
-                    $batchid
-                );
-
-                $coursechanged = true;
-
-                $result['updated'][] = [
-                    'courseid'          => $course->id,
-                    'coursename'        => $course->fullname,
-                    'quizid'            => $quiz->id,
-                    'quizname'          => $quiz->name,
-                    'quiztype'          => $type,
-                    'idnumber'          => $idnumber,
-                    'old_timeopen_raw'  => $oldopen,
-                    'old_timeclose_raw' => $oldclose,
-                    'new_timeopen_raw'  => $newopen,
-                    'new_timeclose_raw' => $newclose,
-                    'old_dates'         => $this->format_date_range($oldopen, $oldclose),
-                    'new_dates'         => $this->format_date_range($newopen, $newclose),
-                ];
             }
 
-            // Rebuild the course cache once per course, not once per quiz.
             if ($coursechanged) {
                 rebuild_course_cache($course->id, true);
             }
@@ -637,6 +838,33 @@ class manager {
         }
 
         return $result;
+    }
+
+    /**
+     * Refresh calendar events after changing a supported activity instance.
+     *
+     * @param string $modulename quiz|assign
+     * @param \stdClass $instance Updated activity record
+     * @param int $cmid Course-module id
+     * @param \stdClass|null $course Full course record when already preloaded
+     * @param \stdClass|null $cm Full course-module record when already preloaded
+     */
+    private function update_activity_calendar($modulename, $instance, $cmid, $course = null, $cm = null) {
+        if ($modulename === 'quiz') {
+            if (function_exists('quiz_update_events')) {
+                quiz_update_events($instance);
+            }
+            return;
+        }
+
+        if (function_exists('assign_prepare_update_events') && $course && $cm) {
+            assign_prepare_update_events($instance, $course, $cm);
+            return;
+        }
+
+        if (function_exists('assign_refresh_events')) {
+            assign_refresh_events($instance->course, $instance, $cmid);
+        }
     }
 
     /**
@@ -653,7 +881,7 @@ class manager {
      *
      * @param int $userid User who made the change
      * @param string $batchid Shared batch identifier
-     * @param int $count Number of tests updated
+     * @param int $count Number of activities updated
      * @param int $categoryid Selected category
      * @param int $coursecount Number of courses changed
      */
@@ -664,30 +892,34 @@ class manager {
     }
 
     /**
-     * Log a single change to the database.
+     * Log a single activity date change to the database.
      *
      * Honours the local_examdates/enable_logging setting (default: on).
      *
      * @param \stdClass $course Course record
-     * @param \stdClass $quiz Quiz record (post-update values)
-     * @param string $idnumber The quiz idnumber (exam/resit1/resit2)
-     * @param int $oldopen Previous timeopen
-     * @param int $oldclose Previous timeclose
-     * @param int $newopen New timeopen
-     * @param int $newclose New timeclose
+     * @param string $modulename quiz|assign
+     * @param \stdClass $activity Activity record after the update
+     * @param string $idnumber Course-module idnumber
+     * @param int $oldopen Previous open timestamp
+     * @param int $oldclose Previous close timestamp
+     * @param int $newopen New open timestamp
+     * @param int $newclose New close timestamp
      * @param int $userid User performing the change
      * @param string $batchid Batch identifier shared by one apply/rollback run
+     * @param array $extra Optional module-specific before/after values
      */
     private function log_change(
         $course,
-        $quiz,
+        $modulename,
+        $activity,
         $idnumber,
         $oldopen,
         $oldclose,
         $newopen,
         $newclose,
         $userid,
-        $batchid
+        $batchid,
+        $extra = []
     ) {
         global $DB, $USER;
 
@@ -701,17 +933,21 @@ class manager {
         $record->categoryid      = $course->category;
         $record->courseid        = $course->id;
         $record->course_fullname = $course->fullname;
-        $record->quizid          = $quiz->id;
-        $record->quiz_name       = $quiz->name;
+        $record->modulename      = $modulename;
+        $record->instanceid      = $activity->id;
+        $record->activity_name   = $activity->name;
+
+        // Keep the legacy columns populated for existing reports/upgrades. For
+        // Assignment rows quizid is 0, while quiz_name still carries a readable
+        // fallback name for older export code.
+        $record->quizid          = $modulename === 'quiz' ? $activity->id : 0;
+        $record->quiz_name       = $activity->name;
         $record->idnumber        = $idnumber;
         $record->old_timeopen    = $oldopen ?: 0;
         $record->old_timeclose   = $oldclose ?: 0;
         $record->new_timeopen    = $newopen;
         $record->new_timeclose   = $newclose;
-        // The rollback_change() method below prefixes its batch id with
-        // 'rollback_' - reuse that same signal here so this column actually
-        // distinguishes the two cases, instead of being hardcoded to one
-        // constant value.
+        $record->extra_data      = empty($extra) ? null : json_encode($extra);
         $record->action_type     = (strpos($batchid, 'rollback_') === 0) ? 'rollback' : 'bulk';
         $record->batch_id        = $batchid;
         $record->ip_address      = getremoteaddr();
@@ -724,7 +960,7 @@ class manager {
      *
      * @param int $userid User who made the change
      * @param string $batchid Batch identifier for this apply/rollback run
-     * @param int $count Number of quiz-type slots changed
+     * @param int $count Number of activity instances changed
      * @param int $categoryid Category the change was applied to
      * @param int $coursecount Number of distinct courses affected
      */
@@ -807,37 +1043,45 @@ class manager {
     }
 
     /**
-     * Roll back a specific change to its previous dates.
+     * Roll back a specific activity change to its previous dates.
      *
      * @param int $logid Log record ID
      * @param int $userid User performing the rollback
      * @return bool True on success.
-     * @throws \moodle_exception If the log entry, its course or its quiz can no longer be found.
-     * @throws \required_capability_exception If the user cannot manage exam dates in that category.
+     * @throws \moodle_exception If the log entry, course or activity can no longer be found.
+     * @throws \required_capability_exception If the user cannot manage dates in that category.
      */
     public function rollback_change($logid, $userid) {
         global $DB, $CFG;
 
         require_once($CFG->dirroot . '/mod/quiz/locallib.php');
+        require_once($CFG->dirroot . '/mod/assign/lib.php');
+        require_once($CFG->dirroot . '/mod/assign/locallib.php');
 
         $log = $DB->get_record('local_examdates_log', ['id' => $logid]);
         if (!$log) {
             throw new \moodle_exception('error_lognotfound', 'local_examdates');
         }
 
-        // Only the most recent change for this quiz may be rolled back - rolling
-        // back an older entry would silently discard whatever changed after it.
+        $modulename = !empty($log->modulename) ? $log->modulename : 'quiz';
+        $instanceid = !empty($log->instanceid) ? (int)$log->instanceid : (int)$log->quizid;
+        if (!in_array($modulename, ['quiz', 'assign'], true) || $instanceid <= 0) {
+            throw new \moodle_exception('error_activitydeleted', 'local_examdates');
+        }
+
+        // Only the most recent change for this exact activity instance may be
+        // rolled back. This prevents an older rollback from discarding a newer
+        // change to the same Quiz or Assignment.
         $latestid = $DB->get_field_sql(
-            'SELECT MAX(id) FROM {local_examdates_log} WHERE quizid = :quizid',
-            ['quizid' => $log->quizid]
+            'SELECT MAX(id)
+               FROM {local_examdates_log}
+              WHERE modulename = :modulename AND instanceid = :instanceid',
+            ['modulename' => $modulename, 'instanceid' => $instanceid]
         );
         if ((int)$latestid !== (int)$log->id) {
             throw new \moodle_exception('rollback_notice', 'local_examdates');
         }
 
-        // The course may have been deleted since the change was logged (this is
-        // exactly why course_fullname/quiz_name are denormalised on the log row).
-        // get_course() throws rather than returning false, so this must be caught.
         try {
             $course = get_course($log->courseid, false);
         } catch (\dml_missing_record_exception $e) {
@@ -846,30 +1090,61 @@ class manager {
 
         $this->require_category_capability($course->category, 'local/examdates:manage');
 
-        $quiz = $DB->get_record('quiz', ['id' => $log->quizid]);
-        if (!$quiz) {
-            throw new \moodle_exception('error_quizdeleted', 'local_examdates');
+        $activity = $DB->get_record($modulename, ['id' => $instanceid]);
+        if (!$activity) {
+            throw new \moodle_exception('error_activitydeleted', 'local_examdates');
         }
 
-        $quiz->timeopen = $log->old_timeopen;
-        $quiz->timeclose = $log->old_timeclose;
-        $quiz->timemodified = time();
-        $DB->update_record('quiz', $quiz);
+        $extra = [];
+        if (!empty($log->extra_data)) {
+            $decoded = json_decode($log->extra_data, true);
+            if (is_array($decoded)) {
+                $extra = $decoded;
+            }
+        }
 
-        if (function_exists('quiz_update_events')) {
-            quiz_update_events($quiz);
+        if ($modulename === 'assign') {
+            $activity->allowsubmissionsfromdate = (int)$log->old_timeopen;
+            $activity->duedate = (int)$log->old_timeclose;
+            if (!empty($extra['old']) && is_array($extra['old'])) {
+                if (array_key_exists('cutoffdate', $extra['old'])) {
+                    $activity->cutoffdate = (int)$extra['old']['cutoffdate'];
+                }
+                if (array_key_exists('gradingduedate', $extra['old'])) {
+                    $activity->gradingduedate = (int)$extra['old']['gradingduedate'];
+                }
+            }
+        } else {
+            $activity->timeopen = (int)$log->old_timeopen;
+            $activity->timeclose = (int)$log->old_timeclose;
+        }
+
+        $activity->timemodified = time();
+        $DB->update_record($modulename, $activity);
+
+        $cm = get_coursemodule_from_instance($modulename, $activity->id, $course->id, false, MUST_EXIST);
+        $this->update_activity_calendar($modulename, $activity, $cm->id, $course, $cm);
+
+        $rollbackextra = [];
+        if (!empty($extra)) {
+            $rollbackextra = [
+                'old' => $extra['new'] ?? [],
+                'new' => $extra['old'] ?? [],
+            ];
         }
 
         $this->log_change(
             $course,
-            $quiz,
+            $modulename,
+            $activity,
             $log->idnumber,
             $log->new_timeopen,
             $log->new_timeclose,
             $log->old_timeopen,
             $log->old_timeclose,
             $userid,
-            'rollback_' . $log->batch_id
+            'rollback_' . $log->batch_id,
+            $rollbackextra
         );
 
         rebuild_course_cache($course->id, true);

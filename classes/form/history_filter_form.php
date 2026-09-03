@@ -15,7 +15,7 @@
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
 /**
- * Filter form for the exam dates change history.
+ * Filter form for the assessment date change history.
  *
  * @package    local_examdates
  * @copyright  2026 Ильдар
@@ -30,7 +30,7 @@ global $CFG;
 require_once($CFG->libdir . '/formslib.php');
 
 /**
- * Filter form shown above the change-history table (course, user, test type,
+ * Filter form shown above the change-history table (course, user, activity ID number,
  * date range).
  */
 class history_filter_form extends \moodleform {
@@ -70,7 +70,7 @@ class history_filter_form extends \moodleform {
         );
         $mform->setType('filteruser', PARAM_INT);
 
-        // Test type (idnumber) filter.
+        // Activity ID number filter.
         $idoptions = ['' => get_string('all')] + $idnumbers;
         $mform->addElement(
             'select',

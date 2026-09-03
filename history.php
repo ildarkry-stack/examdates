@@ -166,13 +166,12 @@ if ($rollbackid) {
 
     $returnurl = new moodle_url($baseurl, $filterparams);
 
-    // Fetch display names up front, from the log row's own denormalised
-    // quiz_name/course_fullname (so this works even if rollback later fails
-    // because the course or quiz has since been deleted) - used to build a
-    // meaningful rollback_success/rollback_error message either way.
+    // Fetch display names up front from the log row's own denormalised
+    // activity/course names. This still gives a meaningful message if the
+    // course or activity was deleted after the change.
     $rollbacklog = $DB->get_record('local_examdates_log', ['id' => $rollbackid]);
     $rollbacka = (object)[
-        'quizname'   => $rollbacklog ? $rollbacklog->quiz_name : '',
+        'activityname' => $rollbacklog ? ($rollbacklog->activity_name ?: $rollbacklog->quiz_name) : '',
         'coursename' => $rollbacklog ? $rollbacklog->course_fullname : '',
     ];
 
@@ -228,7 +227,7 @@ if (optional_param('export', '', PARAM_ALPHA) === 'csv') {
         get_string('changed_at', 'local_examdates'),
         get_string('changed_by', 'local_examdates'),
         get_string('course', 'local_examdates'),
-        get_string('quiz', 'local_examdates'),
+        get_string('activity', 'local_examdates'),
         get_string('idnumber', 'local_examdates'),
         get_string('old_dates', 'local_examdates'),
         get_string('new_dates', 'local_examdates'),
@@ -244,11 +243,14 @@ if (optional_param('export', '', PARAM_ALPHA) === 'csv') {
 
     foreach ($all['records'] as $record) {
         $user = isset($exportusers[$record->userid]) ? $exportusers[$record->userid] : null;
+        $modulename = !empty($record->modulename) ? $record->modulename : 'quiz';
+        $modulelabel = get_string($modulename === 'quiz' ? 'quiz' : 'assignment', 'local_examdates');
+        $activityname = format_string($record->activity_name ?: $record->quiz_name);
         $csv->add_data([
             userdate($record->timecreated, $datetimeformat),
             $user ? fullname($user) : '-',
             format_string($record->course_fullname),
-            format_string($record->quiz_name),
+            $activityname . ' [' . $modulelabel . ']',
             $record->idnumber,
             $manager->format_date_range($record->old_timeopen, $record->old_timeclose),
             $manager->format_date_range($record->new_timeopen, $record->new_timeclose),
@@ -306,16 +308,15 @@ if (empty($history['records'])) {
         get_string('changed_at', 'local_examdates'),
         get_string('changed_by', 'local_examdates'),
         get_string('course', 'local_examdates'),
-        get_string('quiz', 'local_examdates'),
+        get_string('activity', 'local_examdates'),
         get_string('old_dates', 'local_examdates'),
         get_string('new_dates', 'local_examdates'),
         get_string('actions', 'local_examdates'),
     ];
     $table->data = [];
 
-    // Batch-load everything referenced on this page (avoids N+1 queries, and -
-    // unlike get_course() - simply omits rows for courses/quizzes that have
-    // since been deleted instead of throwing).
+    // Batch-load everything referenced on this page. Activity records are
+    // grouped by module so Quiz and Assignment history remains N+1-safe.
     $pageuserids = array_unique(array_map(function ($r) {
         return $r->userid;
     }, $history['records']));
@@ -326,29 +327,52 @@ if (empty($history['records'])) {
     }, $history['records']));
     $pagecourses = $pagecourseids ? $DB->get_records_list('course', 'id', $pagecourseids) : [];
 
-    $pagequizids = array_unique(array_map(function ($r) {
-        return $r->quizid;
-    }, $history['records']));
-    $pagequizzes = $pagequizids ? $DB->get_records_list('quiz', 'id', $pagequizids) : [];
+    $activityids = ['quiz' => [], 'assign' => []];
+    foreach ($history['records'] as $record) {
+        $modulename = !empty($record->modulename) ? $record->modulename : 'quiz';
+        $instanceid = !empty($record->instanceid) ? (int)$record->instanceid : (int)$record->quizid;
+        if (isset($activityids[$modulename]) && $instanceid > 0) {
+            $activityids[$modulename][$instanceid] = $instanceid;
+        }
+    }
 
-    // Rollback is only offered for the latest log entry per quiz (across the
-    // whole log, not just this page) - see the rollback_notice string.
-    $latestidbyquiz = [];
-    if ($pagequizids) {
-        [$insql, $inparams] = $DB->get_in_or_equal($pagequizids, SQL_PARAMS_NAMED);
+    $pageactivities = ['quiz' => [], 'assign' => []];
+    $latestidbyactivity = [];
+    foreach ($activityids as $modulename => $instanceids) {
+        if (!$instanceids) {
+            continue;
+        }
+
+        $pageactivities[$modulename] = $DB->get_records_list(
+            $modulename,
+            'id',
+            array_values($instanceids)
+        );
+
+        [$insql, $inparams] = $DB->get_in_or_equal(
+            array_values($instanceids),
+            SQL_PARAMS_NAMED,
+            'instance'
+        );
+        $inparams['modulename'] = $modulename;
         $latestrows = $DB->get_records_sql(
-            "SELECT quizid, MAX(id) AS maxid FROM {local_examdates_log} WHERE quizid $insql GROUP BY quizid",
+            "SELECT instanceid, MAX(id) AS maxid
+               FROM {local_examdates_log}
+              WHERE modulename = :modulename AND instanceid $insql
+           GROUP BY instanceid",
             $inparams
         );
         foreach ($latestrows as $row) {
-            $latestidbyquiz[$row->quizid] = $row->maxid;
+            $latestidbyactivity[$modulename . ':' . $row->instanceid] = $row->maxid;
         }
     }
 
     foreach ($history['records'] as $record) {
         $user = isset($pageusers[$record->userid]) ? $pageusers[$record->userid] : null;
         $course = isset($pagecourses[$record->courseid]) ? $pagecourses[$record->courseid] : null;
-        $quiz = isset($pagequizzes[$record->quizid]) ? $pagequizzes[$record->quizid] : null;
+        $modulename = !empty($record->modulename) ? $record->modulename : 'quiz';
+        $instanceid = !empty($record->instanceid) ? (int)$record->instanceid : (int)$record->quizid;
+        $activity = $pageactivities[$modulename][$instanceid] ?? null;
 
         $olddates = $manager->format_date_range($record->old_timeopen, $record->old_timeclose);
         $newdates = $manager->format_date_range($record->new_timeopen, $record->new_timeclose);
@@ -371,17 +395,19 @@ if (empty($history['records'])) {
             $coursecell = html_writer::link($courseurl, format_string($coursename), ['target' => '_blank']);
         }
 
-        $quizname = $record->quiz_name;
-        if (empty($quizname)) {
-            $quizname = $quiz ? $quiz->name : $record->idnumber;
+        $activityname = $record->activity_name ?: $record->quiz_name;
+        if (empty($activityname)) {
+            $activityname = $activity ? $activity->name : $record->idnumber;
         }
 
-        // Rollback only makes sense - and is only offered - when the course and
-        // quiz still exist and the current user can manage dates in that category.
-        $islatest = isset($latestidbyquiz[$record->quizid]) && $latestidbyquiz[$record->quizid] == $record->id;
+        // Rollback is offered only for the latest change of the exact activity
+        // instance and only while both the course and activity still exist.
+        $activitykey = $modulename . ':' . $instanceid;
+        $islatest = isset($latestidbyactivity[$activitykey])
+            && $latestidbyactivity[$activitykey] == $record->id;
 
         $canrollback = false;
-        if ($islatest && $course && $quiz && !empty($course->category)) {
+        if ($islatest && $course && $activity && !empty($course->category)) {
             $canrollback = has_capability('local/examdates:manage', \context_coursecat::instance($course->category));
         }
 
@@ -403,7 +429,9 @@ if (empty($history['records'])) {
             userdate($record->timecreated, $datetimeformat),
             $user ? fullname($user) : '-',
             $coursecell,
-            format_string($quizname) . ' (' . s($record->idnumber) . ')',
+            format_string($activityname) . ' ['
+                . get_string($modulename === 'quiz' ? 'quiz' : 'assignment', 'local_examdates')
+                . '] (' . s($record->idnumber) . ')',
             $olddates,
             $newdates,
             $actioncell,

@@ -54,9 +54,13 @@ class provider implements
         $collection->add_database_table('local_examdates_log', [
             'userid'      => 'privacy:metadata:local_examdates_log:userid',
             'courseid'    => 'privacy:metadata:local_examdates_log:courseid',
-            'quizid'      => 'privacy:metadata:local_examdates_log:quizid',
-            'timecreated' => 'privacy:metadata:local_examdates_log:timecreated',
-            'ip_address'  => 'privacy:metadata:local_examdates_log:ip_address',
+            'modulename'   => 'privacy:metadata:local_examdates_log:modulename',
+            'instanceid'    => 'privacy:metadata:local_examdates_log:instanceid',
+            'activity_name' => 'privacy:metadata:local_examdates_log:activity_name',
+            'quizid'        => 'privacy:metadata:local_examdates_log:quizid',
+            'extra_data'    => 'privacy:metadata:local_examdates_log:extra_data',
+            'timecreated'   => 'privacy:metadata:local_examdates_log:timecreated',
+            'ip_address'    => 'privacy:metadata:local_examdates_log:ip_address',
         ], 'privacy:metadata:local_examdates_log');
 
         return $collection;
@@ -122,7 +126,8 @@ class provider implements
             foreach ($records as $record) {
                 $data[] = (object)[
                     'course'        => $record->course_fullname,
-                    'quiz'          => $record->quiz_name,
+                    'activity'      => $record->activity_name ?: $record->quiz_name,
+                    'module'        => $record->modulename ?: 'quiz',
                     'idnumber'      => $record->idnumber,
                     'old_timeopen'  => $record->old_timeopen ? transform::datetime($record->old_timeopen) : '',
                     'old_timeclose' => $record->old_timeclose ? transform::datetime($record->old_timeclose) : '',

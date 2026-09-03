@@ -15,7 +15,7 @@
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
 /**
- * CLI tool to bulk-update exam/resit quiz dates for a course category.
+ * CLI tool to bulk-update Quiz and Assignment dates for a course category.
  *
  * Mirrors what the web UI (index.php) does, so it re-uses the same manager
  * methods (and therefore the same logging, calendar sync and validation).
@@ -38,12 +38,15 @@ require_once($CFG->libdir . '/clilib.php');
         'examopen'    => '',
         'examclose'   => '',
         'examid'      => 'exam',
+        'examassignid' => '',
         'resit1open'  => '',
         'resit1close' => '',
         'resit1id'    => 'resit1',
+        'resit1assignid' => '',
         'resit2open'  => '',
         'resit2close' => '',
         'resit2id'    => 'resit2',
+        'resit2assignid' => '',
         'dryrun'      => false,
     ],
     [
@@ -89,8 +92,18 @@ foreach ($types as $type) {
 
     $preparedata->{'update_' . $type} = ($open !== '' && $close !== '') ? 1 : 0;
     $preparedata->{$type . '_idnumber'} = clean_param($options[$type . 'id'], PARAM_ALPHANUMEXT);
+    $preparedata->{$type . '_assign_idnumber'} = clean_param(
+        $options[$type . 'assignid'],
+        PARAM_ALPHANUMEXT
+    );
 
     if ($preparedata->{'update_' . $type}) {
+        if (
+            $preparedata->{$type . '_idnumber'} === ''
+                && $preparedata->{$type . '_assign_idnumber'} === ''
+        ) {
+            cli_error(get_string('activity_idnumber_required', 'local_examdates') . " ($type)");
+        }
         $opents = strtotime($open);
         $closets = strtotime($close);
         if ($opents === false || $closets === false || $closets <= $opents) {
@@ -126,12 +139,13 @@ if ($dryrun) {
         'courses_with_changes' => 0,
         'total_updates' => 0,
         'total_errors' => 0,
+        'quiz_updates' => 0,
+        'assign_updates' => 0,
+        'quiz_missing' => 0,
+        'assign_missing' => 0,
         'exam_updates' => 0,
         'resit1_updates' => 0,
         'resit2_updates' => 0,
-        'exam_missing' => 0,
-        'resit1_missing' => 0,
-        'resit2_missing' => 0,
     ];
 
     for ($offset = 0; $offset < $totalcourses; $offset += \local_examdates\manager::PROCESS_BATCH_SIZE) {
@@ -155,7 +169,9 @@ if ($dryrun) {
     }
 
     cli_writeln(get_string('preview_stats_message', 'local_examdates', (object)[
-        'tests'   => $stats['total_updates'],
+        'items' => $stats['total_updates'],
+        'quizzes' => $stats['quiz_updates'],
+        'assignments' => $stats['assign_updates'],
         'courses' => $stats['courses_with_changes'],
         'errors'  => $stats['total_errors'],
     ]));

@@ -1,108 +1,117 @@
-# Exam Dates Management (local_examdates)
+# Exam and Assignment Dates Management (local_examdates)
 
-A Moodle local plugin for bulk-updating quiz open/close dates (exam, resit1,
-resit2) across all courses in a category, with preview, change history and
-rollback.
+A Moodle local plugin for bulk-updating assessment dates across many courses in
+a category. It supports both **Quiz (`mod_quiz`)** and **Assignment
+(`mod_assign`)** activities, with paginated preview, background processing,
+change history, CSV export and rollback.
 
 ## Description
 
-**Exam Dates Management** lets administrators set exam and resit dates for many
-courses at once. You pick a course category (optionally including
-subcategories), and the plugin finds quizzes by their ID number (`exam`,
-`resit1`, `resit2` by default, but any value can be used) and updates their
-open/close dates in bulk. Every run shows a before/after preview, and all
-changes are logged so they can be reviewed, exported and rolled back.
+For each assessment period (exam, resit 1 and resit 2), administrators can
+configure an optional Quiz ID number, an optional Assignment ID number, or
+both. The plugin finds matching course modules by their **Common module
+settings → ID number** and applies the selected dates to every permitted course
+in the selected category scope.
+
+Date mapping is:
+
+- Quiz: opening date → `timeopen`; closing date → `timeclose`.
+- Assignment: opening date → **Allow submissions from**; closing date →
+  **Due date**.
+- If an enabled Assignment **Cut-off date** or **Grading due date** would fall
+  before the new Due date, it is moved forward to the new Due date so the
+  assignment keeps a valid date sequence. The original values are stored in
+  the audit log and restored by rollback.
+
+Existing installations remain compatible: the Quiz ID numbers `exam`,
+`resit1`, and `resit2` remain the defaults, while Assignment ID number fields
+are empty by default. Leaving an Assignment field empty therefore preserves
+the plugin's previous Quiz-only behaviour.
 
 ## Features
 
-- Bulk update of quiz open/close dates for a whole category (and its
-  subcategories, if selected). Applying runs as a background task, so
-  category size (tested with thousands of courses) doesn't risk hitting a
-  web request's execution-time limit.
-- Quizzes are matched by course-module ID number, so any naming scheme works.
-- Before/after preview: see exactly what will change before applying anything.
-- Change history with filters (course, user, test type, date range),
-  pagination and CSV export.
-- Per-change rollback to the previous dates. Only the most recent change
-  for a given quiz can be rolled back, and rollback is tied to the quiz's
-  database id - if a quiz is deleted and a new one created with the same
-  ID number, its own change history starts fresh; the old quiz's log
-  entries can no longer be rolled back (this is expected, not a bug).
-- Category-level read-only preview for `local/examdates:preview` holders
-  (e.g. teachers), reachable from that category's own admin menu - no
-  Site administration access required.
-- Calendar events are kept in sync when dates change.
-- Configurable logging and automatic log retention (scheduled task).
-- Privacy (GDPR) provider implemented.
+- Bulk update Quiz and Assignment dates for a whole category and optionally
+  its subcategories.
+- Independent Quiz and Assignment ID numbers for exam, resit 1 and resit 2.
+- Quiz-only, Assignment-only, or combined operation for each assessment period.
+- Paginated preview (50 courses per page) to avoid materialising large course
+  sets in memory.
+- Background apply processing in batches of 500 courses.
+- N+1-safe activity preloading for both supported module types.
+- Change history with filters, pagination and CSV export.
+- Per-activity rollback. Assignment-specific secondary dates changed for
+  consistency are also restored.
+- Moodle calendar event synchronisation after Quiz and Assignment updates and
+  rollbacks.
+- Category-level read-only preview for `local/examdates:preview` holders.
+- Configurable logging and automatic log retention.
+- Privacy (GDPR) provider.
 
 ## Requirements
 
-- Moodle 4.5, 5.0, or 5.1 (CI-tested against all three - see
-  `.github/workflows/moodle-ci.yml`).
-- PHP 8.2 or later.
+- Moodle 4.5, 5.0, or 5.1 (CI matrix in `.github/workflows/moodle-ci.yml`).
+- PHP 8.2 or later for the supported deployment matrix.
 
-## Installation
+## Installation / upgrade
 
-1. Copy the plugin folder to `local/examdates` in your Moodle installation
-   (the folder must be named `examdates`).
-2. Log in as an administrator and follow the upgrade prompt, or run
+1. Copy the plugin folder to `local/examdates` (the folder must be named
+   `examdates`).
+2. Log in as an administrator and follow the Moodle upgrade prompt, or run
    `php admin/cli/upgrade.php`.
-3. Purge caches (Site administration → Development → Purge caches).
+3. Purge caches if required by your deployment process.
+
+Upgrading from 1.4.x adds generic activity fields to the existing audit log.
+Existing Quiz history is migrated automatically and remains available for
+rollback.
 
 ## Usage
 
-1. Go to Site administration → Plugins → Exam Dates Management.
-2. Choose a course category (optionally include subcategories).
-3. Enable the test types you want to update (exam / resit 1 / resit 2), set the
-   ID number the quizzes use, and pick the new open/close dates.
-4. Click **Preview** to review the before/after table.
-5. Click **Apply changes** to confirm, or **Cancel** to go back.
+1. Open Site administration → Plugins → Exam and Assignment Dates Management.
+2. Choose a course category and whether to include subcategories.
+3. Enable one or more periods: exam, resit 1, resit 2.
+4. For each enabled period, enter at least one target ID number:
+   - **Test ID number** for a Quiz;
+   - **Assignment ID number** for an Assignment.
+5. Select the opening and closing/due dates.
+6. Click **Preview**. Each period shows Quiz and Assignment rows separately,
+   including missing targets and before/after dates.
+7. Click **Apply changes** to queue the background update.
+8. Use **View change history** to review, export or roll back changes.
 
-   Applying does not happen immediately: it's queued as a background task
-   and runs on the next cron cycle (typically within a minute), regardless
-   of how many courses are involved - this is deliberate, since a category
-   with hundreds or thousands of courses can take far longer than a web
-   request's execution-time limit allows. You'll get a Moodle notification
-   when it's done; the result is also visible in the change history below.
-6. Use **View change history** to filter, export (CSV) or roll back changes.
-
-Users who only hold `local/examdates:preview` (not `manage`) - typically
-teachers or editing teachers - don't see the Site administration page above
-at all. Instead, from **Course category management**, open the category in
-question and look for **Exam dates preview** in its admin menu. That opens a
-read-only version of the same before/after preview, scoped to that category,
-with no way to apply changes.
-
-Quizzes must have an ID number set in their module settings (Quiz settings →
-Common module settings → ID number) matching the value entered in the form.
+The ID number is the course-module ID number from the activity's Common module
+settings. It is not the database instance ID and does not have to match the
+activity name.
 
 ## CLI
 
-For scripted or scheduled bulk updates, use `cli/update_exam_dates.php`:
+For scripted updates use `cli/update_exam_dates.php`. Example updating both an
+exam Quiz and an exam Assignment:
 
-```
+```bash
 php local/examdates/cli/update_exam_dates.php \
     --categoryid=5 \
-    --examopen="2026-06-01 09:00" --examclose="2026-06-01 11:00" \
-    --resit1open="2026-07-01 09:00" --resit1close="2026-07-01 11:00" \
+    --examid=exam \
+    --examassignid=exam_upload \
+    --examopen="2026-06-01 09:00" \
+    --examclose="2026-06-01 11:00" \
     --dryrun
 ```
 
-Drop `--dryrun` to actually apply the changes. `--includesub=0` restricts the
-update to the category itself (subcategories are included by default).
-`--examid`, `--resit1id`, `--resit2id` override the default idnumbers
-(`exam`, `resit1`, `resit2`).
+Drop `--dryrun` to apply the changes. Assignment options are
+`--examassignid`, `--resit1assignid`, and `--resit2assignid`. Quiz options
+remain `--examid`, `--resit1id`, and `--resit2id`. `--includesub=0` restricts
+the operation to the selected category itself.
 
 ## Settings
 
-- **Enable logging** — record all changes (required for history and rollback).
-- **Log retention (days)** — automatically purge old log entries (0 = keep
-  forever); handled by a daily scheduled task.
-- **Default category** — pre-selected category on the management page.
+- **Enable logging** — record changes for history and rollback.
+- **Log retention period (days)** — automatically delete older log entries
+  (`0` keeps them indefinitely).
+- **Default category** — category preselected on the management page.
 
 ## Capabilities
 
-- `local/examdates:manage` — manage exam dates.
+- `local/examdates:manage` — manage assessment dates.
 - `local/examdates:preview` — preview changes.
 - `local/examdates:bulkupdate` — bulk update via CLI.
 

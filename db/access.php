@@ -26,7 +26,7 @@ defined('MOODLE_INTERNAL') || die();
 
 $capabilities = [
 
-    // Manage exam dates within a course category.
+    // Manage assessment dates within a course category.
     'local/examdates:manage' => [
         'captype'      => 'write',
         'contextlevel' => CONTEXT_COURSECAT,

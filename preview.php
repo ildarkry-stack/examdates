@@ -15,7 +15,7 @@
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
 /**
- * Read-only exam dates preview for a single category.
+ * Read-only assessment dates preview for a single category.
  *
  * Unlike index.php (Site administration, requires local/examdates:manage
  * site-wide), this page is reached from the category's own admin menu and
@@ -90,7 +90,9 @@ if ($data = $mform->get_data()) {
 
     foreach (['exam', 'resit1', 'resit2'] as $type) {
         $idfield = $type . '_idnumber';
-        $preparedata->{$idfield} = !empty($data->{$idfield}) ? trim($data->{$idfield}) : $type;
+        $assignidfield = $type . '_assign_idnumber';
+        $preparedata->{$idfield} = isset($data->{$idfield}) ? trim($data->{$idfield}) : $type;
+        $preparedata->{$assignidfield} = isset($data->{$assignidfield}) ? trim($data->{$assignidfield}) : '';
 
         if (!empty($data->{'update_' . $type})) {
             $preparedata->{$type . 'open'}  = $data->{$type . 'open'};
@@ -153,7 +155,9 @@ if ($preparedata) {
 
     echo $OUTPUT->notification(
         get_string('preview_page_stats_message', 'local_examdates', (object)[
-            'tests'   => $stats['total_updates'],
+            'items' => $stats['total_updates'],
+            'quizzes' => $stats['quiz_updates'],
+            'assignments' => $stats['assign_updates'],
             'courses' => $stats['courses_with_changes'],
             'errors'  => $stats['total_errors'],
             'shown'   => count($courses),
